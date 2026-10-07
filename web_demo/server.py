@@ -13,8 +13,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT.parent))  # 主项目目录，复用 metadata_fetcher
+sys.path.insert(0, str(ROOT.parent))  # 主项目目录，复用 metadata_fetcher / fields
 
+from fields import extract_fields  # noqa: E402
 from metadata_fetcher import fetch_page  # noqa: E402
 
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
@@ -41,31 +42,6 @@ def extract_items(elements) -> tuple[list[dict], int]:
             "attrs": {k: (v if len(v) <= 120 else v[:120] + "…") for k, v in list(attrib.items())[:12]},
         })
     return items, len(elements)
-
-
-def extract_fields(elements) -> list[dict]:
-    """解析「标签: 值」行结构（如 div.text-secondary 里的 发行日期/番号/标题…）。
-
-    规则：行的第一个直接子元素是 <span>（标签），其后是纯文本 / <time> / <a>。
-    """
-    fields = []
-    for el in list(elements)[:MAX_ITEMS]:
-        children = list(getattr(el, "children", None) or [])
-        if not children or getattr(children[0], "tag", None) != "span":
-            continue
-        label_full = _collapse(children[0].get_all_text())
-        label = label_full.rstrip("：: ").strip()
-        full = _collapse(el.get_all_text())
-        value = full[len(label_full):] if full.startswith(label_full) else full.replace(label_full, "", 1)
-        value = value.strip().lstrip(",，").strip()
-
-        times = el.css("time")
-        datetime_val = times[0].attrib.get("datetime", "") if times else ""
-        links = [{"text": _collapse(a.get_all_text()), "href": a.attrib.get("href", "")} for a in el.css("a")]
-        if not label or (not value and not links and not datetime_val):
-            continue
-        fields.append({"label": label, "value": value, "links": links, "datetime": datetime_val})
-    return fields
 
 
 class Handler(BaseHTTPRequestHandler):

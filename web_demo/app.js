@@ -229,7 +229,12 @@ function parseFieldsLocal(doc, selector) {
     let value = full.startsWith(labelRaw)
       ? full.slice(labelRaw.length)
       : full.replace(labelRaw, "");
-    value = value.replace(/\s+/g, " ").trim().replace(/^[,，]\s*/, "");
+    value = value.replace(/\s+/g, " ").trim();
+    // value 原文包含链接文字，去掉重复部分，只留链接之外的剩余文字
+    for (const l of links) {
+      if (l.text) value = value.replace(l.text, "");
+    }
+    value = value.replace(/\s+/g, " ").trim().replace(/^[,，、;；\s]+/, "").replace(/[\s,，、;；]+$/, "");
     if (!label || (!value && !links.length && !time)) continue;
     fields.push({
       label,
@@ -260,13 +265,8 @@ function renderFields(fields) {
     label.textContent = f.label;
     const value = document.createElement("span");
     value.className = "field-value";
-    if (f.datetime) {
-      const dt = document.createElement("span");
-      dt.className = "dt";
-      dt.textContent = f.datetime;
-      dt.title = f.datetime;
-      value.appendChild(dt);
-    }
+    // 日期类字段直接显示纯文本（2026-09-15），不用徽标样式
+    const dateText = f.datetime ? f.datetime.slice(0, 10) : "";
     if (f.links.length) {
       for (const l of f.links) {
         const a = document.createElement("a");
@@ -277,14 +277,20 @@ function renderFields(fields) {
         a.title = l.href;
         value.appendChild(a);
       }
+      const rest = f.value || dateText;
       const tail = document.createElement("span");
       tail.className = "field-plain";
-      tail.textContent = f.value ? " " + f.value : "";
+      tail.textContent = rest ? " " + rest : "";
       value.appendChild(tail);
     } else if (f.value) {
       const plain = document.createElement("span");
       plain.className = "field-plain";
       plain.textContent = f.value;
+      value.appendChild(plain);
+    } else if (dateText) {
+      const plain = document.createElement("span");
+      plain.className = "field-plain";
+      plain.textContent = dateText;
       value.appendChild(plain);
     }
     row.append(label, value);

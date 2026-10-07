@@ -8,6 +8,7 @@ const state = {
   records: [],
   filter: "",
   renameTarget: null,
+  detailTarget: null,
 };
 
 function setStatus(msg, kind) {
@@ -94,6 +95,12 @@ function createCard(record) {
 
   /* 悬停操作条 */
   const actions = el("div", "actions");
+  const detailBtn = el("button", null, "详情");
+  detailBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openDetail(record);
+  });
   const renameBtn = el("button", null, "重命名");
   renameBtn.addEventListener("click", (e) => {
     e.preventDefault();
@@ -112,7 +119,7 @@ function createCard(record) {
     e.stopPropagation();
     removeRecord(record);
   });
-  actions.append(renameBtn, refreshBtn, deleteBtn);
+  actions.append(detailBtn, renameBtn, refreshBtn, deleteBtn);
   thumb.appendChild(actions);
 
   /* 文本区 */
@@ -162,18 +169,23 @@ async function fetchRecord(url) {
     const data = await resp.json();
     if (!data.ok) {
       setStatus("抓取失败：" + data.error, "err");
-      return;
+      return null;
     }
     upsert(data.record);
     render();
+    if (state.detailTarget && state.detailTarget.url === data.record.url) {
+      openDetail(data.record);
+    }
     setStatus(
       data.record.success
         ? `已抓取：${data.record.title || url}`
         : `三级抓取全部失败，已仅保存 URL：${url}`,
       data.record.success ? "" : "err"
     );
+    return data.record;
   } catch (e) {
     setStatus("请求失败：" + e.message, "err");
+    return null;
   } finally {
     $("addBtn").disabled = false;
   }
@@ -224,6 +236,62 @@ async function submitRename() {
   }
 }
 
+/* ---------- 详情弹层（展示 .space-y-2 提取的标签值字段） ---------- */
+
+function openDetail(record) {
+  state.detailTarget = record;
+  renderDetail(record);
+  $("detailMask").hidden = false;
+}
+
+function renderDetail(record) {
+  $("detailTitle").textContent = record.title || "（标题待补充）";
+  $("detailDomain").textContent = record.url;
+  const box = $("detailFields");
+  box.innerHTML = "";
+
+  if (!record.success) {
+    box.appendChild(el("div", "detail-empty", "该记录抓取失败，点「重新抓取」再试"));
+    return;
+  }
+  const details = record.details || [];
+  if (!details.length) {
+    box.appendChild(el("div", "detail-empty", "页面中未提取到 .space-y-2 详情字段，点「重新抓取」更新"));
+    return;
+  }
+  for (const f of details) {
+    const row = el("div", "detail-row");
+    row.appendChild(el("span", "detail-label", f.label));
+    const value = el("span", "detail-value");
+    // 日期类字段直接显示纯文本（2026-09-15），不用徽标样式
+    const dateText = f.datetime ? f.datetime.slice(0, 10) : "";
+    if (f.links && f.links.length) {
+      for (const l of f.links) {
+        const a = document.createElement("a");
+        a.textContent = l.text || l.href;
+        a.href = l.href;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.title = l.href;
+        value.appendChild(a);
+      }
+      const rest = f.value || dateText;
+      if (rest) value.appendChild(document.createTextNode(" " + rest));
+    } else if (f.value) {
+      value.appendChild(document.createTextNode(f.value));
+    } else if (dateText) {
+      value.appendChild(document.createTextNode(dateText));
+    }
+    row.appendChild(value);
+    box.appendChild(row);
+  }
+}
+
+function closeDetail() {
+  $("detailMask").hidden = true;
+  state.detailTarget = null;
+}
+
 /* ---------- 删除 ---------- */
 
 async function removeRecord(record) {
@@ -271,6 +339,24 @@ function init() {
   });
   $("modalMask").addEventListener("click", (e) => {
     if (e.target === $("modalMask")) $("modalCancel").click();
+  });
+
+  $("detailClose").addEventListener("click", closeDetail);
+  $("detailRefresh").addEventListener("click", async () => {
+    const target = state.detailTarget;
+    if (!target) return;
+    $("detailRefresh").disabled = true;
+    try {
+      await fetchRecord(target.url);
+    } finally {
+      $("detailRefresh").disabled = false;
+    }
+  });
+  $("detailMask").addEventListener("click", (e) => {
+    if (e.target === $("detailMask")) closeDetail();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("detailMask").hidden) closeDetail();
   });
 
   loadRecords();

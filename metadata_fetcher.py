@@ -7,6 +7,11 @@ from urllib.parse import urljoin
 
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
+from fields import extract_fields
+
+# 详情区块选择器：抓取成功后顺带解析「标签: 值」字段，无匹配时 details 为空列表
+DETAIL_SELECTOR = ".space-y-2 > *"
+
 
 def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     """按 Fetcher → DynamicFetcher → StealthyFetcher 降级抓取，成功返回 Response，全部失败返回 None。
@@ -64,11 +69,15 @@ def extract_metadata(response, base_url: str) -> dict:
 
 def get_metadata(url: str, timeout: int = 20, proxy: str | None = None) -> dict:
     """抓取一个 URL 的元数据；全部抓取失败时仅保留 URL，标题留空供手动补充。"""
-    meta = {"url": url, "title": "", "thumbnail": "", "favicon": "", "success": False}
+    meta = {"url": url, "title": "", "thumbnail": "", "favicon": "", "success": False, "details": []}
     response = fetch_page(url, timeout=timeout, proxy=proxy)
     if response is None:
         return meta
     base_url = getattr(response, "url", None) or url
     meta.update(extract_metadata(response, base_url))
+    try:
+        meta["details"] = extract_fields(response.css(DETAIL_SELECTOR))
+    except Exception:  # 解析任意 HTML 时个别页面可能出错，不影响主元数据
+        meta["details"] = []
     meta["success"] = True
     return meta

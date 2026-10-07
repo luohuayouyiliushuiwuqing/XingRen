@@ -191,3 +191,22 @@ main { flex: 1; padding: 24px; }
 .modal-actions {
   display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;
 }
+
+/* ---------- 详情弹层 ---------- */
+.detail-modal { width: min(640px, calc(100vw - 48px)); max-height: 82vh; overflow: auto; }
+.detail-domain {
+  font-size: 12.5px; color: var(--muted);
+  margin: -6px 0 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.detail-fields { display: flex; flex-direction: column; gap: 8px; }
+.detail-row {
+  display: flex; align-items: baseline; gap: 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 12px; background: #fdfdfe;
+}
+.detail-label { flex: none; min-width: 72px; color: var(--muted); font-size: 13px; }
+.detail-value { font-size: 13.5px; word-break: break-all; }
+.detail-value a { color: var(--accent); text-decoration: none; margin-right: 8px; }
+.detail-value a:hover { text-decoration: underline; }
+.detail-empty { color: var(--faint); font-size: 13.5px; padding: 18px 0; text-align: center; }
