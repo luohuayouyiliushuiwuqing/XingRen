@@ -35,10 +35,10 @@
     "success": false
   },
   {
-    "url": "https://example.org/new",
-    "title": "新卡片",
-    "thumbnail": "",
-    "favicon": "",
+    "url": "https://mimo.mi.com/",
+    "title": "Xiaomi MiMo-V2.6 系列 3 款全新模型正式发布",
+    "thumbnail": "https://mimo.mi.com/og-image.jpg",
+    "favicon": "https://mimo.mi.com/favicon.png",
     "success": true
   }
 ]

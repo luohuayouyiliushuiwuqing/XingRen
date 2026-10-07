@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>元数据看板</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand"><span class="brand-dot"></span>元数据看板</div>
+    <input id="urlInput" class="input grow" placeholder="粘贴 URL 后回车添加…" spellcheck="false">
+    <button id="addBtn" class="btn-primary">添加</button>
+    <input id="searchInput" class="input search" placeholder="搜索标题或链接…">
+    <input id="proxyInput" class="input proxy" placeholder="代理，如 http://127.0.0.1:7892">
+  </header>
+
+  <main>
+    <div id="board" class="board"></div>
+    <div id="emptyHint" class="empty-hint" hidden>还没有书签，粘贴一个 URL 开始吧</div>
+  </main>
+
+  <footer class="statusbar"><span id="statusText">加载中…</span></footer>
+
+  <!-- 重命名弹窗 -->
+  <div id="modalMask" class="modal-mask" hidden>
+    <div class="modal">
+      <div class="modal-title">重命名</div>
+      <input id="modalInput" class="input" spellcheck="false">
+      <div class="modal-actions">
+        <button id="modalCancel" class="btn-ghost">取消</button>
+        <button id="modalOk" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

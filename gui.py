@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from main import STORE_PATH, load_records, merge_record, save_records
+from records import STORE_PATH, load_records, merge_record, save_records
 from metadata_fetcher import get_metadata
 
 PROXY_DEFAULT = "http://127.0.0.1:7892"
