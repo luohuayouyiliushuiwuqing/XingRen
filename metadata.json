@@ -1,0 +1,44 @@
+[
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "thumbnail": "",
+    "favicon": "data:,",
+    "success": true
+  },
+  {
+    "url": "https://github.com",
+    "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+    "thumbnail": "https://images.ctfassets.net/8aevphvgewt8/4pe4eOtUJ0ARpZRE4fNekf/f52b1f9c52f059a33170229883731ed0/GH-Homepage-Universe-img.png",
+    "favicon": "https://github.com/fluidicon.png",
+    "success": true
+  },
+  {
+    "url": "https://sspai.com",
+    "title": "少数派 - 高效工作，品质生活",
+    "thumbnail": "",
+    "favicon": "https://cdn-static.sspai.com/favicon/sspai.ico",
+    "success": true
+  },
+  {
+    "url": "https://www.bilibili.com",
+    "title": "哔哩哔哩 (゜-゜)つロ 干杯~-bilibili",
+    "thumbnail": "",
+    "favicon": "https://i0.hdslb.com/bfs/static/jinkela/long/images/512.png",
+    "success": true
+  },
+  {
+    "url": "https://nonexistent-domain-xyz123.invalid",
+    "title": "手动补充的标题",
+    "thumbnail": "",
+    "favicon": "",
+    "success": false
+  },
+  {
+    "url": "https://example.org/new",
+    "title": "新卡片",
+    "thumbnail": "",
+    "favicon": "",
+    "success": true
+  }
+]
