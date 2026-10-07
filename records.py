@@ -130,10 +130,3 @@ def delete_record(url: str) -> bool:
     with _db() as conn:
         cur = conn.execute("DELETE FROM records WHERE url = ?", (url,))
     return cur.rowcount > 0
-
-
-def export_json(path: Path) -> int:
-    """把库内记录导出为 JSON 文件（备份 / 人工查看用）。"""
-    records = list_records()
-    path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-    return len(records)
