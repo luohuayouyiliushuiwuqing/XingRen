@@ -17,7 +17,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT.parent))  # 主项目目录，复用 records / metadata_fetcher
 
 from metadata_fetcher import get_metadata  # noqa: E402
-from records import STORE_PATH, load_records, merge_record, save_records  # noqa: E402
+from records import delete_record, list_records, set_title, upsert_record  # noqa: E402
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/records":
-            self._send_json({"records": load_records(STORE_PATH)})
+            self._send_json({"records": list_records()})
             return
         if parsed.path == "/api/img":
             self.handle_img(parse_qs(parsed.query))
@@ -102,9 +102,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         meta = get_metadata(url, proxy=proxy)
-        records = merge_record(load_records(STORE_PATH), meta)
-        save_records(STORE_PATH, records)
-        merged = next(r for r in records if r["url"] == url)
+        merged = upsert_record(meta)
         self._send_json({"ok": True, "record": merged})
 
     def do_PATCH(self) -> None:
@@ -116,14 +114,11 @@ class Handler(BaseHTTPRequestHandler):
         if "title" not in data:
             self._send_json({"ok": False, "error": "缺少 title"}, 400)
             return
-        records = load_records(STORE_PATH)
-        for record in records:
-            if record["url"] == url:
-                record["title"] = (data.get("title") or "").strip()
-                save_records(STORE_PATH, records)
-                self._send_json({"ok": True, "record": record})
-                return
-        self._send_json({"ok": False, "error": "记录不存在"}, 404)
+        record = set_title(url, data.get("title") or "")
+        if record is None:
+            self._send_json({"ok": False, "error": "记录不存在"}, 404)
+            return
+        self._send_json({"ok": True, "record": record})
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
@@ -131,12 +126,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         url = (parse_qs(parsed.query).get("url") or [""])[0]
-        records = load_records(STORE_PATH)
-        remaining = [r for r in records if r["url"] != url]
-        if len(remaining) == len(records):
+        if not delete_record(url):
             self._send_json({"ok": False, "error": "记录不存在"}, 404)
             return
-        save_records(STORE_PATH, remaining)
         self._send_json({"ok": True})
 
     def log_message(self, fmt: str, *args) -> None:

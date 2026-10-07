@@ -1,3 +1,6 @@
 .idea
 _tmp
 __pycache__/
+metadata.db
+metadata.db-wal
+metadata.db-shm

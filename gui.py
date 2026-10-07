@@ -4,7 +4,6 @@
 """
 
 import sys
-from pathlib import Path
 
 from PyQt5.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPixmap
@@ -25,7 +24,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from records import STORE_PATH, load_records, merge_record, save_records
+from records import delete_record, list_records, set_title, upsert_record
 from metadata_fetcher import get_metadata
 
 PROXY_DEFAULT = "http://127.0.0.1:7892"
@@ -316,10 +315,9 @@ class Board(QWidget):
 
 
 class MainWindow(QWidget):
-    def __init__(self, store_path: Path = STORE_PATH):
+    def __init__(self):
         super().__init__()
-        self.store_path = store_path
-        self.records = load_records(store_path)
+        self.records = list_records()
         self.tasks: set[FetchTask] = set()
         self.setObjectName("Root")
         self.setWindowTitle("元数据看板")
@@ -419,9 +417,8 @@ class MainWindow(QWidget):
     def on_fetched(self, meta: dict) -> None:
         self.add_btn.setEnabled(True)
         url = meta["url"]
-        self.records = merge_record(self.records, meta)
-        save_records(self.store_path, self.records)
-        merged = next(r for r in self.records if r["url"] == url)
+        merged = upsert_record(meta)
+        self.records = list_records()
         card = self.board.find_card(url)
         if card:
             card.set_record(merged)
@@ -438,12 +435,10 @@ class MainWindow(QWidget):
         )
         if not ok or not text.strip():
             return
-        card.record["title"] = text.strip()
-        for record in self.records:
-            if record["url"] == card.record["url"]:
-                record["title"] = text.strip()
-        save_records(self.store_path, self.records)
-        card.set_record(card.record)
+        updated = set_title(card.record["url"], text.strip())
+        if updated:
+            self.records = list_records()
+            card.set_record(updated)
         self._update_status()
 
     def delete_record(self, url: str) -> None:
@@ -454,8 +449,8 @@ class MainWindow(QWidget):
         )
         if answer != QMessageBox.Yes:
             return
-        self.records = [r for r in self.records if r["url"] != url]
-        save_records(self.store_path, self.records)
+        if delete_record(url):
+            self.records = list_records()
         self.board.remove_card(url)
         self._update_status()
 
