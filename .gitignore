@@ -4,3 +4,8 @@ __pycache__/
 metadata.db
 metadata.db-wal
 metadata.db-shm
+
+# 打包产物（pip install -e . / pip wheel 生成）
+dist/
+build/
+*.egg-info/

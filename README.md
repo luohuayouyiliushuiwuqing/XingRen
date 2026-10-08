@@ -10,37 +10,46 @@
 - **详情字段解析**：抓取时顺带解析 `.space-y-2 > *` 中的「标签: 值」结构（发行日期、番号、类型链接等），在看板「详情」弹层展示
 - **Raindrop 看板**：卡片网格（缩略图在上、标题在下）、搜索过滤、添加 / 重命名 / 重新抓取 / 删除
 - **服务端图片代理**：缩略图与 favicon 经本地代理加载，避免浏览器直连外站被重置
-- **SQLite 存储**：`metadata.db`，首次启动自动导入历史 `metadata.json`；合并规则保证抓取失败不覆盖已有数据和手动补充的标题
+- **SQLite 存储**：`metadata.db`，合并规则保证抓取失败不覆盖已有数据和手动补充的标题
 
 ## 目录结构
 
 ```
 XingRen/
-├── metadata_fetcher.py   # 核心：三级降级抓取 + 元数据/详情提取
-├── fields.py             # 「标签: 值」字段解析（主项目与 web_demo 共用）
-├── records.py            # SQLite 存储层（含 JSON 历史数据自动导入）
-├── webui/                # 主界面：Raindrop 看板（端口 4509）
-│   ├── server.py         # 静态托管 + REST API
-│   └── index.html / style.css / app.js
-├── web_demo/             # 独立演示：CSS 选择器试验台（端口 8765）
-│   ├── server.py         # 静态托管 + /api/fetch（输入网址按选择器提取）
-│   └── index.html / style.css / app.js / fixture.html
-├── metadata.db           # SQLite 数据库（运行时生成，已 gitignore）
-├── metadata.json         # 历史数据备份（只读，导入后不再更新）
-└── requirements.txt
+├── pyproject.toml         # 打包配置：依赖来源、控制台入口
+├── xingren/               # Python 包（绝对 import，无 sys.path hack）
+│   ├── core/              # 与界面无关的核心逻辑
+│   │   ├── fetcher.py     # 核心：三级降级抓取 + 元数据/详情提取
+│   │   ├── fields.py      # 「标签: 值」字段解析（看板与试验台共用）
+│   │   └── records.py     # SQLite 存储层
+│   └── web/
+│       ├── webui/         # 主界面：Raindrop 看板（端口 4509）
+│       │   ├── server.py  # 静态托管 + REST API
+│       │   └── index.html / style.css / app.js
+│       └── demo/          # 独立演示：CSS 选择器试验台（端口 8765）
+│           ├── server.py  # 静态托管 + /api/fetch（输入网址按选择器提取）
+│           └── index.html / style.css / app.js / fixture.html
+├── metadata.db            # SQLite 数据库（运行时生成，已 gitignore）
+├── CHANGE.md              # 变更记录
+├── CLAUDE.md              # Claude Code 使用指引
+└── requirements.txt       # 全量 pinned 依赖（同时是 pyproject 的依赖来源）
 ```
 
 ## 环境准备
 
 ```bash
-# 1. conda 环境（本项目使用 Ximages）
-conda activate Ximages
+# 1. conda 环境（本项目使用 xingren）
+conda activate xingren
 
 # 2. 安装依赖（可加清华源）
 pip install -r requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
 # 3. 下载浏览器内核（DynamicFetcher / StealthyFetcher 需要）
 patchright install chromium
+
+# 4. 安装本项目（editable；依赖已在第 2 步装好，故 --no-deps 跳过解析，
+#    --no-build-isolation --no-index 全程不联网）
+pip install -e . --no-deps --no-build-isolation --no-index
 ```
 
 ## 使用
@@ -48,8 +57,11 @@ patchright install chromium
 ### 看板（主界面）
 
 ```bash
-python webui/server.py          # 默认 http://127.0.0.1:4509/
-python webui/server.py --port 8000   # 自定义端口
+xingren-webui                        # 默认 http://127.0.0.1:4509/
+xingren-webui --port 8000            # 自定义端口
+
+# 免安装方式（必须在仓库根目录执行）
+python -m xingren.web.webui.server [--port 4509]
 ```
 
 - 顶部粘贴 URL 回车「添加」；右侧搜索框过滤；代理框默认 `http://127.0.0.1:7892`（留空直连）
@@ -59,8 +71,10 @@ python webui/server.py --port 8000   # 自定义端口
 ### 选择器试验台（演示）
 
 ```bash
-cd web_demo
-python server.py                # http://127.0.0.1:8765/
+xingren-demo                        # http://127.0.0.1:8765/
+
+# 免安装方式（必须在仓库根目录执行）
+python -m xingren.web.demo.server
 ```
 
 输入网址 + CSS 选择器（如 `.space-y-2 > *`），服务端抓取并展示匹配元素与字段卡片；
@@ -80,5 +94,6 @@ python server.py                # http://127.0.0.1:8765/
 
 - **代理**：抓取外国网站时在界面填本地代理（Clash 等，默认 7892）；代理不可用会自动回退直连再试整条降级链
 - **合并规则**：按 URL 去重；抓取失败保留原记录；页面无标题时不覆盖手动补充的标题
-- **数据迁移**：`metadata.db` 为空且存在 `metadata.json` 时自动导入；之后数据只写库，JSON 留作备份
-- **调试抓取链**：抓取日志会打印到启动 `server.py` 的终端
+- **数据文件**：`metadata.db` 固定放仓库根（已 gitignore）；非 editable 安装时可用环境变量 `XINGREN_DATA_DIR` 指定存放目录
+- **入口约定**：只支持 `xingren-webui` / `xingren-demo` 或 `python -m …`（后者需在仓库根目录执行）；不要直接 `python xingren/web/webui/server.py`，它依赖 `sys.path`，行为随安装状态变化
+- **调试抓取链**：抓取日志会打印到启动命令所在的终端

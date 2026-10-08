@@ -1,9 +1,10 @@
 """本地演示服务：托管静态页面，并提供 /api/fetch 接口。
 
 接口用 Scrapling 抓取指定网址，再按 CSS 选择器提取元素，供试验台展示。
-抓取逻辑复用主项目的 metadata_fetcher（位于上一级目录）。
+抓取逻辑复用 xingren.core 的 fetcher / fields。
 
-用法：python server.py   （默认 http://127.0.0.1:8765/）
+用法：python -m xingren.web.demo.server   （默认 http://127.0.0.1:8765/，在仓库根目录执行）
+     或安装后直接 xingren-demo
 """
 
 import json
@@ -12,11 +13,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT.parent))  # 主项目目录，复用 metadata_fetcher / fields
+from xingren.core.fields import extract_fields
+from xingren.core.fetcher import fetch_page
 
-from fields import extract_fields  # noqa: E402
-from metadata_fetcher import fetch_page  # noqa: E402
+ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
 MAX_HTML_CHARS = 400_000  # 超大页面不回传源码，只回传提取结果

@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
-from fields import extract_fields
+from xingren.core.fields import extract_fields
 
 # 详情区块选择器：抓取成功后顺带解析「标签: 值」字段，无匹配时 details 为空列表
 DETAIL_SELECTOR = ".space-y-2 > *"

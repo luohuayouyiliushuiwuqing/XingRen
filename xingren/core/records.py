@@ -1,16 +1,20 @@
-"""书签记录存储：SQLite（metadata.db），替代原 metadata.json。
+"""书签记录存储：SQLite（metadata.db）。
 
-首次使用且数据库为空时，自动从同目录的 metadata.json 导入历史数据。
 线程安全：每次操作独立短连接，读写走 WAL 模式。
 """
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).with_name("metadata.db")
-JSON_PATH = Path(__file__).with_name("metadata.json")
+# 数据文件始终放在仓库根：parents[0]=core, [1]=xingren, [2]=仓库根。
+# editable 安装下 __file__ 指向源码树，结果即仓库根；
+# 非 editable（wheel）安装下会落到 site-packages（静默写错地方），
+# 故留 XINGREN_DATA_DIR 环境变量兜底。
+_DATA_DIR = Path(os.environ.get("XINGREN_DATA_DIR") or Path(__file__).resolve().parents[2])
+DB_PATH = _DATA_DIR / "metadata.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
@@ -22,8 +26,6 @@ CREATE TABLE IF NOT EXISTS records (
     details   TEXT NOT NULL DEFAULT '[]'
 )
 """
-
-_initialized = False
 
 
 def _row_to_record(row: sqlite3.Row) -> dict:
@@ -38,32 +40,9 @@ def _row_to_record(row: sqlite3.Row) -> dict:
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
-    global _initialized
     conn.execute(_SCHEMA)
-    if _initialized:
-        return
+    # WAL 让多线程（ThreadingHTTPServer）并发读写安全；幂等，重复执行无副作用
     conn.execute("PRAGMA journal_mode=WAL")
-    # 数据库为空且存在历史 JSON 时，一次性导入
-    count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-    if count == 0 and JSON_PATH.exists():
-        data = json.loads(JSON_PATH.read_text(encoding="utf-8-sig"))
-        for rec in data:
-            if not isinstance(rec, dict) or not rec.get("url"):
-                continue
-            conn.execute(
-                "INSERT OR IGNORE INTO records (url, title, thumbnail, favicon, success, details) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    rec["url"],
-                    rec.get("title", ""),
-                    rec.get("thumbnail", ""),
-                    rec.get("favicon", ""),
-                    1 if rec.get("success") else 0,
-                    json.dumps(rec.get("details") or [], ensure_ascii=False),
-                ),
-            )
-        conn.commit()
-    _initialized = True
 
 
 @contextmanager
@@ -79,7 +58,7 @@ def _db():
 
 
 def list_records() -> list[dict]:
-    """全部记录，按插入顺序（与原 JSON 数组顺序一致）。"""
+    """全部记录，按插入顺序。"""
     with _db() as conn:
         rows = conn.execute("SELECT * FROM records ORDER BY rowid").fetchall()
     return [_row_to_record(row) for row in rows]

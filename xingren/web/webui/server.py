@@ -1,8 +1,9 @@
 """主项目 Web 看板服务：Raindrop 风格书签卡片，端口默认 4509。
 
-数据与 CLI / Qt 版共用 metadata.json；抓取复用 metadata_fetcher 的三级降级链。
+数据存 SQLite（仓库根 metadata.db）；抓取复用 xingren.core.fetcher 的三级降级链。
 
-用法：python webui/server.py [--port 4509]
+用法：python -m xingren.web.webui.server [--port 4509]   （在仓库根目录执行）
+     或安装后直接 xingren-webui [--port 4509]
 """
 
 import json
@@ -13,11 +14,10 @@ from urllib.parse import parse_qs, urlparse
 
 from curl_cffi.requests import get as http_get
 
-ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT.parent))  # 主项目目录，复用 records / metadata_fetcher
+from xingren.core.fetcher import get_metadata
+from xingren.core.records import delete_record, list_records, set_title, upsert_record
 
-from metadata_fetcher import get_metadata  # noqa: E402
-from records import delete_record, list_records, set_title, upsert_record  # noqa: E402
+ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
