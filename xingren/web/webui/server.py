@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from curl_cffi.requests import get as http_get
 
-from xingren.core.fetcher import get_metadata
+from xingren.core.fetcher import _is_domestic, get_metadata
 from xingren.core.records import delete_record, list_records, set_title, upsert_record
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
@@ -74,6 +74,8 @@ class Handler(BaseHTTPRequestHandler):
         if not src.startswith(("http://", "https://")):
             self.send_error(400)
             return
+        if proxy and _is_domestic(src):
+            proxy = None
         try:
             resp = http_get(src, proxy=proxy, timeout=10)
         except Exception:

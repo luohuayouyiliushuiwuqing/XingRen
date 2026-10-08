@@ -3,7 +3,7 @@
 选择抓取器拉取页面后，直接在返回的 Response 对象上用 CSS 选择器提取数据。
 """
 
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
@@ -12,12 +12,46 @@ from xingren.core.fields import extract_fields
 # 详情区块选择器：抓取成功后顺带解析「标签: 值」字段，无匹配时 details 为空列表
 DETAIL_SELECTOR = ".space-y-2 > *"
 
+# 国内域名后缀（.cn 及其二级后缀）
+_DOMESTIC_SUFFIXES = (".cn", ".com.cn", ".net.cn", ".org.cn")
+# 常见国内域名（不含 .cn 后缀，需显式列出）
+_DOMESTIC_DOMAINS: set[str] = {
+    "baidu.com", "bilibili.com", "zhihu.com", "weibo.com", "douyin.com",
+    "xiaohongshu.com", "taobao.com", "tmall.com", "jd.com", "pinduoduo.com",
+    "qq.com", "weixin.qq.com", "163.com", "126.com", "sina.com", "sohu.com",
+    "csdn.net", "cnblogs.com", "jianshu.com", "juejin.cn",
+    "aliyun.com", "tencent.com", "huawei.com", "xiaomi.com", "mi.com",
+    "xiaomimimo.com", "deepseek.com",
+    "apple.com", "microsoft.com", "google.com.hk",
+    "feishu.cn", "dingtalk.com", "yuque.com",
+    "hdslb.com", "127.net", "netease.com", "kimi.com",
+}
+
+
+def _is_domestic(url: str) -> bool:
+    """判断 URL 是否为国内网站（不走代理）。"""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if any(host.endswith(s) for s in _DOMESTIC_SUFFIXES):
+        return True
+    # 子域名匹配：mimo.mi.com → 检查 mi.com
+    parts = host.split(".")
+    for i in range(len(parts) - 1):
+        if ".".join(parts[i:]) in _DOMESTIC_DOMAINS:
+            return True
+    return False
+
 
 def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     """按 Fetcher → DynamicFetcher → StealthyFetcher 降级抓取，成功返回 Response，全部失败返回 None。
 
-    配置代理时先用代理抓取，代理不可用则回退直连重试整条降级链。
+    国内网站自动跳过代理直连；外国站配置代理时先用代理抓取，代理不可用则回退直连重试整条降级链。
     """
+    if proxy and _is_domestic(url):
+        print(f"  国内站点，跳过代理直连：{urlparse(url).hostname}")
+        proxy = None
     engines = (
         lambda p: Fetcher.get(url, timeout=timeout, proxy=p),
         # 浏览器抓取器的 timeout 单位是毫秒，与 Fetcher（秒）不同

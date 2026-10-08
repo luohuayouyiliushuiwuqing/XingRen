@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-10-08 13:56:50 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 国内网站自动跳过代理直连（后端 `fetcher.py`，1 处改动）
+
+  - 新增 `_is_domestic(url)` 判断：匹配 `.cn` 及其二级后缀（`.com.cn` /
+    `.net.cn` / `.org.cn`），以及 30 个常见国内域名（baidu / bilibili / zhihu /
+    taobao / jd / 163 / aliyun / mi.com 等），子域名自动匹配（`mimo.mi.com` → `mi.com`）
+  - `fetch_page()` 开头加一行：`if proxy and _is_domestic(url): proxy = None`
+    代理为空后三级降级链照常走直连，无需改后续逻辑
+  - IP 地址（如 `120.26.238.72`）不会被误判为国内域名
+
+  验证：15 个用例全部通过（10 个 True + 5 个 False）；编译通过。
+
+  **追加修复**（同一批次）：`/api/img` 图片代理走的是 `server.py` 的
+  `handle_img`（`curl_cffi.requests.get`），不经过 `fetch_page`，所以
+  国内域名判断不生效——`mimo.mi.com` 等国内站图片仍走 `127.0.0.1:7892`（不存在）→ 502。
+  修法：`server.py` import `_is_domestic`，`handle_img` 请求前加同样的
+  `if proxy and _is_domestic(src): proxy = None`。
+  补充 `deepseek.com`、`xiaomimimo.com`、`hdslb.com`（B站CDN）、
+  `127.net`（网易CDN）、`netease.com`、`kimi.com` 到国内域名列表。
+  18 个图片 URL 用例全部通过（国内 15 个直连、外国 3 个走代理）。
+
 ## 2026-10-08 13:48:11 +0800
 
 - **用户**: haijie yin
