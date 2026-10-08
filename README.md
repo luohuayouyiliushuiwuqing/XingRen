@@ -23,7 +23,7 @@ XingRen/
 │   │   ├── fields.py      # 「标签: 值」字段解析（看板与试验台共用）
 │   │   └── records.py     # SQLite 存储层
 │   └── web/
-│       ├── webui/         # 主界面：Raindrop 看板（端口 4509）
+│       ├── webui/         # 主界面：Raindrop 看板（默认 0.0.0.0:4000）
 │       │   ├── server.py  # 静态托管 + REST API
 │       │   └── index.html / style.css / app.js
 │       └── demo/          # 独立演示：CSS 选择器试验台（端口 8765）
@@ -57,11 +57,13 @@ pip install -e . --no-deps --no-build-isolation --no-index
 ### 看板（主界面）
 
 ```bash
-xingren-webui                        # 默认 http://127.0.0.1:4509/
-xingren-webui --port 8000            # 自定义端口
+xingren-webui                              # 默认 http://0.0.0.0:4000/
+xingren-webui --port 8000                  # 自定义端口
+xingren-webui --host 127.0.0.1             # 只监听本机（不对外暴露）
+xingren-webui --host 0.0.0.0 --port 4000   # 显式指定
 
 # 免安装方式（必须在仓库根目录执行）
-python -m xingren.web.webui.server [--port 4509]
+python -m xingren.web.webui.server [--host 0.0.0.0] [--port 4000]
 ```
 
 - 顶部粘贴 URL 回车「添加」；右侧搜索框过滤；代理框默认 `http://127.0.0.1:7892`（留空直连）
@@ -96,4 +98,6 @@ python -m xingren.web.demo.server
 - **合并规则**：按 URL 去重；抓取失败保留原记录；页面无标题时不覆盖手动补充的标题
 - **数据文件**：`metadata.db` 固定放仓库根（已 gitignore）；非 editable 安装时可用环境变量 `XINGREN_DATA_DIR` 指定存放目录
 - **入口约定**：只支持 `xingren-webui` / `xingren-demo` 或 `python -m …`（后者需在仓库根目录执行）；不要直接 `python xingren/web/webui/server.py`，它依赖 `sys.path`，行为随安装状态变化
+- **监听地址**：看板默认 `0.0.0.0:4000`（所有网卡，便于远程访问），可用 `--host` / `--port` 覆盖；选择器试验台仍固定 `127.0.0.1:8765`
+- **⚠ 无鉴权**：`POST /api/fetch` 与 `GET /api/img` 会让**服务器**去抓取任意 URL，`DELETE /api/record` 可直接删库。绑到 `0.0.0.0` 意味着任何能连上该端口的人都能调用这些接口。仅本机使用请加 `--host 127.0.0.1`；确需对外暴露时，在云安全组 / 防火墙上只放行可信 IP（云主机上还需放行安全组与 `firewalld`/`ufw` 的 4000 端口，否则外部访问会超时）
 - **调试抓取链**：抓取日志会打印到启动命令所在的终端

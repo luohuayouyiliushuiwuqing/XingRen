@@ -1,9 +1,9 @@
-"""主项目 Web 看板服务：Raindrop 风格书签卡片，端口默认 4509。
+"""主项目 Web 看板服务：Raindrop 风格书签卡片，默认监听 0.0.0.0:4000。
 
 数据存 SQLite（仓库根 metadata.db）；抓取复用 xingren.core.fetcher 的三级降级链。
 
-用法：python -m xingren.web.webui.server [--port 4509]   （在仓库根目录执行）
-     或安装后直接 xingren-webui [--port 4509]
+用法：python -m xingren.web.webui.server [--host 0.0.0.0] [--port 4000]   （在仓库根目录执行）
+     或安装后直接 xingren-webui [--host …] [--port …]
 """
 
 import json
@@ -132,17 +132,26 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     def log_message(self, fmt: str, *args) -> None:
-        print("[webui]", self.address_string(), fmt % args)
+        print("[webui]", self.address_string(), fmt % args, flush=True)
+
+
+def _opt(name: str, default: str) -> str:
+    """取 `--name value` 形式的参数；缺失或没跟值时回退默认值。"""
+    if name not in sys.argv:
+        return default
+    idx = sys.argv.index(name)
+    return sys.argv[idx + 1] if idx + 1 < len(sys.argv) else default
 
 
 def main() -> None:
-    port = 4509
-    if "--port" in sys.argv:
-        idx = sys.argv.index("--port")
-        if idx + 1 < len(sys.argv):
-            port = int(sys.argv[idx + 1])
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Web 看板已启动：http://127.0.0.1:{port}/")
+    host = _opt("--host", "0.0.0.0")
+    port = int(_opt("--port", "4000"))
+    server = ThreadingHTTPServer((host, port), Handler)
+    # flush：重定向到文件时 stdout 是块缓冲，不加则 nohup/tail -f 看不到启动横幅
+    print(f"Web 看板已启动：http://{host}:{port}/", flush=True)
+    if host == "0.0.0.0":
+        print(f"  本机访问：http://127.0.0.1:{port}/", flush=True)
+        print("  已监听所有网卡且无鉴权；仅本机使用请加 --host 127.0.0.1", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
