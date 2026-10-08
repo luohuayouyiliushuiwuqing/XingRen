@@ -107,39 +107,24 @@ function createCard(record) {
   }
   thumb.appendChild(open);
 
-  /* 悬停操作条 */
-  const actions = el("div", "actions");
+  /* 右上角快捷按钮（详情 / 重新抓取） */
+  const topActions = el("div", "thumb-actions");
   const detailBtn = el("button", null, "详情");
-  detailBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openDetail(record);
-  });
-  const renameBtn = el("button", null, "重命名");
-  renameBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openRename(record);
-  });
-  const tagBtn = el("button", null, "标签");
-  tagBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openTag(record);
-  });
+  detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openDetail(record); });
   const refreshBtn = el("button", null, "重新抓取");
-  refreshBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    fetchRecord(record.url);
-  });
+  refreshBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fetchRecord(record.url); });
+  topActions.append(detailBtn, refreshBtn);
+  thumb.appendChild(topActions);
+
+  /* 底部操作条（重命名 / 标签 / 删除） */
+  const actions = el("div", "actions");
+  const renameBtn = el("button", null, "重命名");
+  renameBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openRename(record); });
+  const tagBtn = el("button", null, "标签");
+  tagBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openTag(record); });
   const deleteBtn = el("button", null, "删除");
-  deleteBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    removeRecord(record);
-  });
-  actions.append(detailBtn, renameBtn, tagBtn, refreshBtn, deleteBtn);
+  deleteBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); removeRecord(record); });
+  actions.append(renameBtn, tagBtn, deleteBtn);
   thumb.appendChild(actions);
 
   /* 文本区 */

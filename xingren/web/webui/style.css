@@ -248,7 +248,26 @@ main {
   box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
 }
 
-/* 悬停操作条（与打开链接的 <a> 是兄弟节点，互不影响） */
+/* 右上角快捷按钮（详情 / 重新抓取） */
+.thumb-actions {
+  position: absolute; top: 6px; right: 6px;
+  z-index: 2;
+  display: flex; gap: 4px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.card:hover .thumb-actions { opacity: 1; }
+.thumb-actions button {
+  border: none; border-radius: 6px;
+  background: rgba(255, 255, 255, .88);
+  color: var(--ink);
+  font-size: 11px; padding: 3px 8px;
+  cursor: pointer; font-family: inherit;
+  backdrop-filter: blur(4px);
+}
+.thumb-actions button:hover { background: #fff; color: var(--accent); }
+
+/* 底部操作条（重命名 / 标签 / 删除） */
 .actions {
   position: absolute; left: 0; right: 0; bottom: 0;
   z-index: 2;

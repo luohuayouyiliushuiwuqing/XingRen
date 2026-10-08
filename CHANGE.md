@@ -8,6 +8,19 @@
 
 ---
 
+## 2026-10-08 17:15:38 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 卡片操作按钮拆分——详情/重新抓取移到缩略图右上角（2 文件，+34 / -30）
+
+  - `app.js`：底部操作条拆为两组——`thumb-actions`（右上角：详情/重新抓取）
+    和 `actions`（底部：重命名/标签/删除）；代码压缩为单行事件绑定
+  - `style.css`：新增 `.thumb-actions`（`position: absolute; top:6px; right:6px`），
+    半透明白底 + `backdrop-filter: blur(4px)` 毛玻璃效果，悬停时 `opacity: 1`
+
+  验证：JS 语法通过；`thumb-actions` / `topActions` / `actions.append` 引用正确。
+
 ## 2026-10-08 17:05:22 +0800
 
 - **用户**: haijie yin
