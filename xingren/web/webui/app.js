@@ -202,20 +202,13 @@ function buildSidebar() {
   }
 }
 
-/* ---------- 渲染 ---------- */
+/* ---------- 当前可见记录（搜索 + 域名 + 标签过滤，render 与导出共用） ---------- */
 
-function render() {
-  const board = $("board");
-  board.innerHTML = "";
-  buildSidebar();
-
+function getVisibleRecords() {
   let visible = state.records.filter(matchesFilter);
-
-  /* 按域名过滤 */
   if (state.selectedDomain) {
     visible = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
   }
-  /* 按标签过滤 */
   if (state.selectedTag) {
     if (state.selectedTag === "__untagged__") {
       visible = visible.filter(r => !r.tags || !r.tags.length);
@@ -223,6 +216,17 @@ function render() {
       visible = visible.filter(r => r.tags && r.tags.some(t => t.name === state.selectedTag));
     }
   }
+  return visible;
+}
+
+/* ---------- 渲染 ---------- */
+
+function render() {
+  const board = $("board");
+  board.innerHTML = "";
+  buildSidebar();
+
+  const visible = getVisibleRecords();
 
   /* 按域名分组显示 */
   const domainMap = new Map();
@@ -508,6 +512,57 @@ async function removeRecord(record) {
   }
 }
 
+/* ---------- 导出 ---------- */
+
+function escHtml(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function downloadFile(fileName, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportTxt(records) {
+  const text = records.map(r => r.url).join("\n") + "\n";
+  downloadFile("bookmarks.txt", text, "text/plain;charset=utf-8");
+}
+
+function exportHtml(records) {
+  const now = Math.floor(Date.now() / 1000);
+  const lines = records.map(r => {
+    const tags = (r.tags || []).map(t => t.name).join(",");
+    const tagAttr = tags ? ` TAGS="${escHtml(tags)}"` : "";
+    return `    <DT><A HREF="${escHtml(r.url)}" ADD_DATE="${now}"${tagAttr}>${escHtml(r.title || r.url)}</A>`;
+  });
+  const html = [
+    "<!DOCTYPE NETSCAPE-Bookmark-file-1>",
+    '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+    "<TITLE>Bookmarks</TITLE>",
+    "<H1>Bookmarks</H1>",
+    "<DL><p>",
+    ...lines,
+    "</DL><p>",
+    "",
+  ].join("\n");
+  downloadFile("bookmarks.html", html, "text/html;charset=utf-8");
+}
+
+function doExport(format) {
+  const records = getVisibleRecords();
+  if (!records.length) { setStatus("当前没有可导出的记录", "err"); return; }
+  if (format === "txt") exportTxt(records);
+  else if (format === "html") exportHtml(records);
+  setStatus(`已导出 ${records.length} 条为 ${format.toUpperCase()}`);
+}
+
 /* ---------- TXT 导入 ---------- */
 
 function parseUrls(text, fileName) {
@@ -580,6 +635,11 @@ function init() {
     const file = e.target.files[0];
     if (file) importFromFile(file);
     e.target.value = "";  // 允许重复选同一文件
+  });
+  $("exportSelect").addEventListener("change", (e) => {
+    const format = e.target.value;
+    e.target.value = "";  // 复位，允许重复导出同格式
+    if (format) doExport(format);
   });
   $("searchInput").addEventListener("input", (e) => {
     state.filter = e.target.value.trim().toLowerCase();

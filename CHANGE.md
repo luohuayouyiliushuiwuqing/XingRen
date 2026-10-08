@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-10-08 16:50:20 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 新增导出功能（TXT / HTML，导出当前可见记录；3 文件，+76 / -9）
+
+  - `app.js`：抽公共函数 `getVisibleRecords()`（搜索 + 域名 + 标签过滤，
+    `render()` 与导出共用）；新增 `exportTxt`（一行一个 URL）、
+    `exportHtml`（Netscape Bookmark 格式，含 `ADD_DATE` 和 `TAGS` 属性）、
+    `downloadFile`（Blob + `URL.createObjectURL` 触发下载）、
+    `escHtml`（转义 `& < > "`，防标题里的特殊字符破坏 HTML）、`doExport`
+  - `index.html`：toolbar 加 `<select id="exportSelect">`（导出 / TXT / HTML）
+  - `style.css`：`.export-select` 样式
+
+  语义：**导出当前可见记录**（侧边栏域名/标签筛选 + 搜索框过滤后的结果），
+  选格式后下拉框复位，可重复导出；无可见记录时状态栏提示。
+
+  验证：JS 语法通过；TXT 输出 3 行 URL；HTML 输出含转义
+  （`&`→`&amp;`、`<`→`&lt;`）与 TAGS；**往返校验一致**（导出 URL 能被
+  现有导入逻辑原样读回）。
+
+  已知限制：导入目前只读 `HREF`，`TAGS` 属性不会写回标签（需后端 `/api/fetch`
+  接受 tags 参数才能完整闭环）。
+
 ## 2026-10-08 16:37:43 +0800
 
 - **用户**: haijie yin
