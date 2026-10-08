@@ -395,10 +395,64 @@ async function removeRecord(record) {
   }
 }
 
+/* ---------- TXT 导入 ---------- */
+
+function parseUrls(text, fileName) {
+  if (/\.html?$/i.test(fileName)) {
+    /* HTML（Netscape Bookmark 格式）：提取所有 <A HREF="..."> */
+    const doc = new DOMParser().parseFromString(text, "text/html");
+    return [...doc.querySelectorAll("a[href]")].map(a => a.href).filter(u => /^https?:\/\//i.test(u));
+  }
+  /* TXT：一行一个 URL */
+  return text.split(/\r?\n/).map(l => l.trim()).filter(l => /^https?:\/\//i.test(l));
+}
+
+async function importFromFile(file) {
+  const text = await file.text();
+  const urls = [...new Set(parseUrls(text, file.name))];  // 去重
+  if (!urls.length) { setStatus("文件中未找到 http 开头的 URL", "err"); return; }
+
+  const proxy = $("proxyInput").value.trim();
+  const existing = new Set(state.records.map(r => r.url));
+  const toFetch = urls.filter(u => !existing.has(u));
+  const skipped = urls.length - toFetch.length;
+
+  $("importBtn").disabled = true;
+  let done = 0, ok = 0, fail = 0;
+  const CONCURRENCY = 5;
+
+  async function worker() {
+    while (done < toFetch.length) {
+      const i = done++;
+      setStatus(`导入中 ${i + 1}/${toFetch.length}（成功 ${ok}，失败 ${fail}，跳过 ${skipped}）`, "busy");
+      try {
+        const resp = await fetch("/api/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: toFetch[i], proxy }),
+        });
+        const data = await resp.json();
+        if (data.ok) { upsert(data.record); ok++; }
+        else fail++;
+      } catch { fail++; }
+      render();
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toFetch.length) }, () => worker()));
+
+  $("importBtn").disabled = false;
+  const parts = [`共 ${urls.length} 条`];
+  if (ok) parts.push(`成功 ${ok}`);
+  if (fail) parts.push(`失败 ${fail}`);
+  if (skipped) parts.push(`跳过 ${skipped}（已存在）`);
+  setStatus(`导入完成：${parts.join("，")}`, ok > 0 ? "" : "err");
+}
+
 /* ---------- 事件绑定 ---------- */
 
 function init() {
-  $("proxyInput").value = "http://127.0.0.1:7892";
+  $("proxyInput").value = "http://127.0.0.1:7897";
 
   $("sidebarToggle").addEventListener("click", () => {
     $("sidebar").classList.toggle("collapsed");
@@ -407,6 +461,12 @@ function init() {
   $("addBtn").addEventListener("click", addUrl);
   $("urlInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") addUrl();
+  });
+  $("importBtn").addEventListener("click", () => $("fileInput").click());
+  $("fileInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) importFromFile(file);
+    e.target.value = "";  // 允许重复选同一文件
   });
   $("searchInput").addEventListener("input", (e) => {
     state.filter = e.target.value.trim().toLowerCase();

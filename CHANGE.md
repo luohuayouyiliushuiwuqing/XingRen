@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-10-08 15:25:17 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 导入性能优化——并发抓取 + 跳过已存在（`app.js`，`importFromFile` 重写）
+
+  - 并发度 5：用 `Promise.all` + worker 池模式同时处理 5 条 URL，
+    替代原来逐条串行。100 条 × 20s：33 分钟 → 约 7 分钟
+  - 跳过已存在：用 `Set` 收集 `state.records` 中已有 URL，
+    导入前过滤掉已存在的，状态栏显示跳过数量
+  - 文件内去重：`[...new Set(parseUrls(...))]` 去除重复 URL
+
+  验证：JS 语法通过；CONCURRENCY = 5，worker 池 + Promise.all 模式正确。
+
+## 2026-10-08 15:18:22 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 导入功能支持 HTML 文件（Raindrop.io / Netscape Bookmark 格式）
+
+  - `index.html`：`<input accept=".txt,.html,.htm">`
+  - `app.js`：新增 `parseUrls(text, fileName)` 按文件后缀分流——
+    `.html` / `.htm` 用 `DOMParser` 解析，提取所有 `<A HREF="...">` 的 href；
+    其余按 TXT 逐行过滤 `http` 开头的行
+    导入逻辑不变：逐条 POST `/api/fetch`，进度实时显示
+
+  验证：JS 语法通过；Raindrop HTML 示例 3/3 URL 提取正确。
+
+## 2026-10-08 15:08:43 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 支持从 TXT 文件批量导入 URL（`app.js` + `index.html`，+38）
+
+  - `index.html`：toolbar 加「导入」按钮（`btn-ghost`）+ 隐藏 `<input type="file" accept=".txt">`
+  - `app.js`：新增 `importFromFile(file)`——读取文件文本，按行分割，
+    过滤以 `http://` 或 `https://` 开头的行作为 URL，逐条 POST `/api/fetch`，
+    每条完成后实时渲染，状态栏显示进度（`导入中 3/50（成功 2，失败 0）`），
+    完成后汇总成功/失败数；按钮在导入期间 disabled 防重复点击
+
+  验证：JS 语法通过；解析测试 5/5 正确（跳过注释、空行、非 URL 行）。
+
 ## 2026-10-08 14:52:37 +0800
 
 - **用户**: haijie yin
