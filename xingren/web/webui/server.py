@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from curl_cffi.requests import get as http_get
 
 from xingren.core.fetcher import _is_domestic, get_metadata
-from xingren.core.records import delete_record, list_records, set_title, upsert_record
+from xingren.core.records import delete_record, list_records, set_group_name, set_title, upsert_record
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 
@@ -113,10 +113,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = self._read_json()
         url = (data.get("url") or "").strip()
-        if "title" not in data:
-            self._send_json({"ok": False, "error": "缺少 title"}, 400)
+        if "title" not in data and "group_name" not in data:
+            self._send_json({"ok": False, "error": "缺少 title 或 group_name"}, 400)
             return
-        record = set_title(url, data.get("title") or "")
+        record = None
+        if "title" in data:
+            record = set_title(url, data.get("title") or "")
+        if "group_name" in data:
+            record = set_group_name(url, data.get("group_name") or "")
         if record is None:
             self._send_json({"ok": False, "error": "记录不存在"}, 404)
             return

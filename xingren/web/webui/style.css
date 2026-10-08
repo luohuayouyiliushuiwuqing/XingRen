@@ -138,6 +138,37 @@ main {
 }
 .btn-icon:hover { background: var(--accent-weak); color: var(--accent); }
 
+/* 侧边栏子分组树 */
+.sidebar-domain {
+  font-weight: 600;
+}
+.sidebar-sub {
+  padding-left: 22px;
+  font-size: 12.5px;
+}
+.group-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-weak);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+  line-height: 1.6;
+}
+.sub-group-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 12px 0 6px;
+  padding-left: 2px;
+}
+.sub-group-header:first-child { margin-top: 0; }
+.domain-content {
+  margin-top: 4px;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);

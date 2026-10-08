@@ -18,12 +18,13 @@ DB_PATH = _DATA_DIR / "metadata.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
-    url       TEXT PRIMARY KEY,
-    title     TEXT NOT NULL DEFAULT '',
-    thumbnail TEXT NOT NULL DEFAULT '',
-    favicon   TEXT NOT NULL DEFAULT '',
-    success   INTEGER NOT NULL DEFAULT 0,
-    details   TEXT NOT NULL DEFAULT '[]'
+    url        TEXT PRIMARY KEY,
+    title      TEXT NOT NULL DEFAULT '',
+    thumbnail  TEXT NOT NULL DEFAULT '',
+    favicon    TEXT NOT NULL DEFAULT '',
+    success    INTEGER NOT NULL DEFAULT 0,
+    details    TEXT NOT NULL DEFAULT '[]',
+    group_name TEXT NOT NULL DEFAULT ''
 )
 """
 
@@ -36,11 +37,17 @@ def _row_to_record(row: sqlite3.Row) -> dict:
         "favicon": row["favicon"],
         "success": bool(row["success"]),
         "details": json.loads(row["details"] or "[]"),
+        "group_name": row["group_name"],
     }
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_SCHEMA)
+    # 已有数据库迁移：group_name 列（v0.2 新增）
+    try:
+        conn.execute("SELECT group_name FROM records LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE records ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
     # WAL 让多线程（ThreadingHTTPServer）并发读写安全；幂等，重复执行无副作用
     conn.execute("PRAGMA journal_mode=WAL")
 
@@ -77,12 +84,14 @@ def upsert_record(new: dict) -> dict:
         if old is not None and not new.get("success"):
             return _row_to_record(old)
         title = new.get("title", "") or (old["title"] if old is not None else "")
+        group_name = new.get("group_name", "") or (old["group_name"] if old is not None else "")
         conn.execute(
-            "INSERT INTO records (url, title, thumbnail, favicon, success, details) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO records (url, title, thumbnail, favicon, success, details, group_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(url) DO UPDATE SET title = excluded.title, "
             "thumbnail = excluded.thumbnail, favicon = excluded.favicon, "
-            "success = excluded.success, details = excluded.details",
+            "success = excluded.success, details = excluded.details, "
+            "group_name = CASE WHEN excluded.group_name = '' THEN records.group_name ELSE excluded.group_name END",
             (
                 new["url"],
                 title,
@@ -90,6 +99,7 @@ def upsert_record(new: dict) -> dict:
                 new.get("favicon", ""),
                 1 if new.get("success") else 0,
                 json.dumps(new.get("details") or [], ensure_ascii=False),
+                group_name,
             ),
         )
         row = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
@@ -99,6 +109,15 @@ def upsert_record(new: dict) -> dict:
 def set_title(url: str, title: str) -> dict | None:
     with _db() as conn:
         cur = conn.execute("UPDATE records SET title = ? WHERE url = ?", (title.strip(), url))
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT * FROM records WHERE url = ?", (url,)).fetchone()
+    return _row_to_record(row)
+
+
+def set_group_name(url: str, group_name: str) -> dict | None:
+    with _db() as conn:
+        cur = conn.execute("UPDATE records SET group_name = ? WHERE url = ?", (group_name.strip(), url))
         if cur.rowcount == 0:
             return None
         row = conn.execute("SELECT * FROM records WHERE url = ?", (url,)).fetchone()

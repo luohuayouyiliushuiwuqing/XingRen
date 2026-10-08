@@ -8,7 +8,9 @@ const state = {
   records: [],
   filter: "",
   selectedDomain: null,    // null = "全部"，字符串 = 选中的域名
+  selectedGroup: null,     // null = 该域名下全部，字符串 = 选中的子分组
   renameTarget: null,
+  groupTarget: null,       // 分组弹窗的目标记录
   detailTarget: null,
 };
 
@@ -118,6 +120,12 @@ function createCard(record) {
     e.stopPropagation();
     openRename(record);
   });
+  const groupBtn = el("button", null, "分组");
+  groupBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openGroup(record);
+  });
   const refreshBtn = el("button", null, "重新抓取");
   refreshBtn.addEventListener("click", (e) => {
     e.preventDefault();
@@ -130,7 +138,7 @@ function createCard(record) {
     e.stopPropagation();
     removeRecord(record);
   });
-  actions.append(detailBtn, renameBtn, refreshBtn, deleteBtn);
+  actions.append(detailBtn, renameBtn, groupBtn, refreshBtn, deleteBtn);
   thumb.appendChild(actions);
 
   /* 文本区 */
@@ -146,6 +154,7 @@ function createCard(record) {
   const domainRow = el("div", "domain");
   domainRow.appendChild(el("span", "dot " + (record.success ? "ok" : "fail")));
   domainRow.appendChild(el("span", null, host));
+  if (record.group_name) domainRow.appendChild(el("span", "group-badge", record.group_name));
   body.append(title, domainRow);
 
   card.append(thumb, body);
@@ -159,24 +168,46 @@ function buildSidebar() {
   sb.innerHTML = "";
 
   /* "全部" 项 */
-  const all = el("div", "sidebar-item" + (state.selectedDomain === null ? " active" : ""));
+  const allActive = state.selectedDomain === null;
+  const all = el("div", "sidebar-item" + (allActive ? " active" : ""));
   all.innerHTML = `<span>全部</span><span class="sidebar-count">${state.records.length}</span>`;
-  all.addEventListener("click", () => { state.selectedDomain = null; render(); });
+  all.addEventListener("click", () => { state.selectedDomain = null; state.selectedGroup = null; render(); });
   sb.appendChild(all);
 
-  /* 按可注册域名分组 */
-  const groups = new Map();
+  /* 按域名 → 子分组两级分组 */
+  const domainMap = new Map();  // domain → Map(group → [records])
   for (const r of state.records) {
     const d = rootDomain(hostOf(r.url)) || "unknown";
-    (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
+    const g = r.group_name || "未分组";
+    if (!domainMap.has(d)) domainMap.set(d, new Map());
+    const gMap = domainMap.get(d);
+    if (!gMap.has(g)) gMap.set(g, []);
+    gMap.get(g).push(r);
   }
-  const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  const sortedDomains = [...domainMap.entries()].sort((a, b) => {
+    const sum = (m) => [...m.values()].reduce((s, arr) => s + arr.length, 0);
+    return sum(b[1]) - sum(a[1]);
+  });
 
-  for (const [domain, recs] of sorted) {
-    const item = el("div", "sidebar-item" + (state.selectedDomain === domain ? " active" : ""));
-    item.innerHTML = `<span>${domain}</span><span class="sidebar-count">${recs.length}</span>`;
-    item.addEventListener("click", () => { state.selectedDomain = domain; render(); });
-    sb.appendChild(item);
+  for (const [domain, gMap] of sortedDomains) {
+    const domainTotal = [...gMap.values()].reduce((s, arr) => s + arr.length, 0);
+    const domainActive = state.selectedDomain === domain && state.selectedGroup === null;
+    const domainItem = el("div", "sidebar-item sidebar-domain" + (domainActive ? " active" : ""));
+    domainItem.innerHTML = `<span>${domain}</span><span class="sidebar-count">${domainTotal}</span>`;
+    domainItem.addEventListener("click", () => { state.selectedDomain = domain; state.selectedGroup = null; render(); });
+    sb.appendChild(domainItem);
+
+    /* 子分组（仅当选中该域名时展开显示） */
+    if (state.selectedDomain === domain) {
+      const sortedGroups = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+      for (const [group, recs] of sortedGroups) {
+        const groupActive = state.selectedGroup === group;
+        const sub = el("div", "sidebar-item sidebar-sub" + (groupActive ? " active" : ""));
+        sub.innerHTML = `<span>${group}</span><span class="sidebar-count">${recs.length}</span>`;
+        sub.addEventListener("click", () => { state.selectedGroup = group; render(); });
+        sb.appendChild(sub);
+      }
+    }
   }
 }
 
@@ -189,39 +220,96 @@ function render() {
 
   const visible = state.records.filter(matchesFilter);
 
-  if (state.selectedDomain) {
-    /* 选中某域名 → 平铺该域名的记录 */
-    const filtered = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
+  if (state.selectedDomain && state.selectedGroup) {
+    /* 选中子分组 → 平铺 */
+    const filtered = visible.filter(r =>
+      rootDomain(hostOf(r.url)) === state.selectedDomain &&
+      (r.group_name || "未分组") === state.selectedGroup
+    );
     for (const r of filtered) board.appendChild(createCard(r));
     $("emptyHint").hidden = filtered.length > 0;
-    setStatus(`共 ${state.records.length} 条，选中 ${state.selectedDomain} (${filtered.length})`);
+    setStatus(`共 ${state.records.length} 条，${state.selectedDomain} / ${state.selectedGroup} (${filtered.length})`);
+
+  } else if (state.selectedDomain) {
+    /* 选中域名 → 按子分组分组 */
+    const domainRecs = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
+    const gMap = new Map();
+    for (const r of domainRecs) {
+      const g = r.group_name || "未分组";
+      (gMap.get(g) ?? gMap.set(g, []).get(g)).push(r);
+    }
+    const sorted = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+
+    for (const [group, recs] of sorted) {
+      const section = document.createElement("div");
+      section.className = "domain-group";
+      const header = document.createElement("div");
+      header.className = "domain-header";
+      header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${group}</span><span class="domain-count">${recs.length}</span>`;
+      const grid = document.createElement("div");
+      grid.className = "domain-grid";
+      for (const r of recs) grid.appendChild(createCard(r));
+      section.append(header, grid);
+      if (recs.length > 20) section.classList.add("collapsed");
+      header.addEventListener("click", () => section.classList.toggle("collapsed"));
+      board.appendChild(section);
+    }
+    $("emptyHint").hidden = domainRecs.length > 0;
+    setStatus(`共 ${state.records.length} 条，${state.selectedDomain} (${domainRecs.length})`);
+
   } else {
-    /* "全部" → 域名分组视图 */
-    const groups = new Map();
+    /* 全部 → 域名 → 子分组两级分组 */
+    const domainMap = new Map();
     for (const r of visible) {
       const d = rootDomain(hostOf(r.url)) || "unknown";
-      (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
+      if (!domainMap.has(d)) domainMap.set(d, new Map());
+      const g = r.group_name || "未分组";
+      const gMap = domainMap.get(d);
+      if (!gMap.has(g)) gMap.set(g, []);
+      gMap.get(g).push(r);
     }
-    const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+    const sortedDomains = [...domainMap.entries()].sort((a, b) => {
+      const sum = (m) => [...m.values()].reduce((s, arr) => s + arr.length, 0);
+      return sum(b[1]) - sum(a[1]);
+    });
 
-    if (sorted.length <= 1) {
+    if (sortedDomains.length <= 1 && sortedDomains[0] && [...sortedDomains[0][1]].length <= 1) {
+      /* 单域名单子分组：直接平铺 */
       for (const r of visible) board.appendChild(createCard(r));
     } else {
-      for (const [domain, recs] of sorted) {
+      for (const [domain, gMap] of sortedDomains) {
+        const domainTotal = [...gMap.values()].reduce((s, arr) => s + arr.length, 0);
         const section = document.createElement("div");
         section.className = "domain-group";
         const header = document.createElement("div");
         header.className = "domain-header";
-        header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
-        const grid = document.createElement("div");
-        grid.className = "domain-grid";
-        for (const r of recs) grid.appendChild(createCard(r));
-        section.append(header, grid);
+        header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${domainTotal}</span>`;
 
-        const collapsed = recs.length > 20;
-        if (collapsed) section.classList.add("collapsed");
+        const sortedGroups = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+        const content = document.createElement("div");
+        content.className = "domain-content";
+
+        if (sortedGroups.length === 1 && sortedGroups[0][0] === "未分组") {
+          /* 单子分组（未分组）：不显示子分组头，直接平铺 */
+          const grid = document.createElement("div");
+          grid.className = "domain-grid";
+          for (const r of sortedGroups[0][1]) grid.appendChild(createCard(r));
+          content.appendChild(grid);
+        } else {
+          for (const [group, recs] of sortedGroups) {
+            const subHeader = document.createElement("div");
+            subHeader.className = "sub-group-header";
+            subHeader.textContent = `${group} (${recs.length})`;
+            const grid = document.createElement("div");
+            grid.className = "domain-grid";
+            for (const r of recs) grid.appendChild(createCard(r));
+            content.append(subHeader, grid);
+          }
+        }
+
+        section.append(header, content);
+        if (domainTotal > 20) section.classList.add("collapsed");
         header.addEventListener("click", () => section.classList.toggle("collapsed"));
-
         board.appendChild(section);
       }
     }
@@ -229,8 +317,8 @@ function render() {
     $("emptyHint").hidden = visible.length > 0;
     setStatus(
       state.filter
-        ? `${visible.length} / ${state.records.length} 条匹配，${sorted.length} 个域名`
-        : `共 ${state.records.length} 条，${sorted.length} 个域名`
+        ? `${visible.length} / ${state.records.length} 条匹配，${sortedDomains.length} 个域名`
+        : `共 ${state.records.length} 条，${sortedDomains.length} 个域名`
     );
   }
 }
@@ -314,6 +402,42 @@ async function submitRename() {
     setStatus("重命名失败：" + e.message, "err");
   } finally {
     state.renameTarget = null;
+  }
+}
+
+/* ---------- 分组 ---------- */
+
+function openGroup(record) {
+  state.groupTarget = record;
+  $("groupInput").value = record.group_name || "";
+  $("groupMask").hidden = false;
+  $("groupInput").focus();
+}
+
+async function submitGroup() {
+  const record = state.groupTarget;
+  if (!record) return;
+  const group_name = $("groupInput").value.trim();
+  $("groupMask").hidden = true;
+  if (group_name === (record.group_name || "")) return;
+  try {
+    const resp = await fetch("/api/record", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: record.url, group_name }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      record.group_name = data.record.group_name;
+      render();
+      setStatus(`已${group_name ? "归入「" + group_name + "」" : "取消分组"}`);
+    } else {
+      setStatus("分组失败：" + data.error, "err");
+    }
+  } catch (e) {
+    setStatus("分组失败：" + e.message, "err");
+  } finally {
+    state.groupTarget = null;
   }
 }
 
@@ -484,6 +608,19 @@ function init() {
   });
   $("modalMask").addEventListener("click", (e) => {
     if (e.target === $("modalMask")) $("modalCancel").click();
+  });
+
+  $("groupOk").addEventListener("click", submitGroup);
+  $("groupCancel").addEventListener("click", () => {
+    $("groupMask").hidden = true;
+    state.groupTarget = null;
+  });
+  $("groupInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitGroup();
+    if (e.key === "Escape") $("groupCancel").click();
+  });
+  $("groupMask").addEventListener("click", (e) => {
+    if (e.target === $("groupMask")) $("groupCancel").click();
   });
 
   $("detailClose").addEventListener("click", closeDetail);

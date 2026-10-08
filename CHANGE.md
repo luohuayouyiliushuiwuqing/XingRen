@@ -8,6 +8,58 @@
 
 ---
 
+## 2026-10-08 16:12:38 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 域名下再分组——用户自定义子分组（7 文件，+294 / -46）
+
+  - `records.py`：schema 加 `group_name TEXT NOT NULL DEFAULT ''`；
+    `_ensure()` 迁移逻辑（`ALTER TABLE` 兼容已有数据库）；
+    `_row_to_record` 解析；`upsert_record` 保留分组名（`CASE WHEN … = ''` 不覆盖）；
+    新增 `set_group_name(url, group_name)` —— 与 `set_title` 同模式
+  - `server.py`：`PATCH /api/record` 扩展为同时处理 `title` 和 `group_name`；
+    import 加 `set_group_name`
+  - `app.js`：state 加 `selectedGroup` / `groupTarget`；
+    卡片操作条加「分组」按钮（详情/重命名/**分组**/重新抓取/删除）；
+    卡片域名行加 `.group-badge` 显示分组名；
+    `buildSidebar` 改为域名 → 子分组两级树（点击域名展开子分组列表，
+    子分组缩进显示；「未分组」作为默认子分组名）；
+    `render()` 三级分支：选中子分组 → 平铺；选中域名 → 子分组分组；
+    全部 → 域名 → 子分组两级分组（单域名单子分组时退化为平铺）；
+    新增 `openGroup` / `submitGroup` 弹窗逻辑；`init()` 加分组弹窗事件
+  - `index.html`：加分组弹窗（`#groupMask` + `#groupInput`）
+  - `style.css`：`.sidebar-domain` / `.sidebar-sub`（缩进）/ `.group-badge`（徽标）/
+    `.sub-group-header` / `.domain-content`
+
+  验证：JS 语法 / Python 编译 / 数据库迁移（23 条记录兼容，group_name 读写正确）/
+  服务启动 200 / HTML groupMask / JS 17 处分组引用。
+
+  TODO 第 6 项完成，移入「已完成」。
+
+## 2026-10-08 15:38:55 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: TODO.md 第 6 项改为「域名下再分组（用户自定义子分组）」，替代原 Raindrop 标签方案
+
+  - 不采用 Raindrop 的扁平标签，改为 域名 → 子分组 两级层级
+  - 数据库：`records` 表加 `group_name TEXT NOT NULL DEFAULT ''` 列，
+    与 `title` 同逻辑保留（抓取不覆盖手动分配的分组）
+  - UI：侧边栏改为域名 → 子分组两级树；卡片显示子分组名；
+    操作菜单分配/修改子分组；「未分组」作为默认
+
+## 2026-10-08 15:32:09 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: TODO.md 新增第 6 项——标签数据库设计（JSON TEXT 列方案已定）
+
+  - 方案：`tags TEXT NOT NULL DEFAULT '[]'`，与现有 `details` 同构，
+    用 `json.loads` / `json.dumps` 读写，SQLite `json_each()` 可展开查询
+  - 不需要额外 `tags` 表 / `record_tags` 关联表（个人工具规模过度工程化）
+  - 改动范围已列出：records.py / fetcher.py / server.py / app.js / style.css
+
 ## 2026-10-08 15:25:17 +0800
 
 - **用户**: haijie yin
