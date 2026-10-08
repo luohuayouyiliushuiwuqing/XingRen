@@ -7,6 +7,7 @@
 """
 
 import json
+import os
 import sys
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,14 +19,14 @@ from curl_cffi.requests import get as http_get
 from xingren.core.fetcher import _is_domestic, get_metadata
 from xingren.core.proxy import detect_proxy
 from xingren.core.records import (
-    DATA_DIR, add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
-    get_domain_need_proxy, insert_quick_records, list_domains, list_proxy_rules,
-    list_records, list_tags, match_proxy_rule, remove_tag_from_record, set_title,
-    update_domain, upsert_proxy_rule, upsert_record,
+    add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
+    get_cache_dir, get_domain_need_proxy, get_storage_paths, insert_quick_records,
+    list_domains, list_proxy_rules, list_records, list_tags, match_proxy_rule,
+    remove_tag_from_record, set_storage_dir, set_title, update_domain,
+    upsert_proxy_rule, upsert_record,
 )
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
-IMG_CACHE_DIR = DATA_DIR / "cache" / "img"  # 图片本地缓存（gitignored，可整目录删除刷新）
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -90,6 +91,12 @@ class Handler(BaseHTTPRequestHandler):
             # 每次都重新探测（并行，约 0.25s），不缓存：代理可能刚启动
             self._send_json({"ok": True, "proxy": detect_proxy()})
             return
+        if path in ("/api/storage-dir", "/api/db-path"):  # db-path 为旧路径兼容
+            self._send_json(get_storage_paths())
+            return
+        if path == "/api/fs/list":
+            self._send_json(self._fs_list((qs.get("path") or [""])[0]))
+            return
         if path == "/api/img":
             self.handle_img(qs)
             return
@@ -122,8 +129,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         digest = sha256(src.encode("utf-8")).hexdigest()[:32]
-        bin_path = IMG_CACHE_DIR / f"{digest}.bin"
-        ct_path = IMG_CACHE_DIR / f"{digest}.ct"
+        cache_dir = get_cache_dir()  # 跟随存储目录，切换后自动指向新位置
+        bin_path = cache_dir / f"{digest}.bin"
+        ct_path = cache_dir / f"{digest}.ct"
 
         # 命中本地缓存：直接返回，不走网络
         if bin_path.is_file() and ct_path.is_file():
@@ -143,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # 只缓存成功的图片（4xx/5xx 不落盘，避免把错误页缓存住）
         if 200 <= (resp.status_code or 0) < 300 and body:
-            IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_dir.mkdir(parents=True, exist_ok=True)
             bin_path.write_bytes(body)
             ct_path.write_text(ctype, encoding="utf-8")
 
@@ -210,7 +218,37 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "proxy": detect_proxy()})
             return
 
+        if path in ("/api/storage-dir", "/api/db-path"):
+            # 切换存储目录：数据库、图片缓存等本地私有数据整体迁移，立即生效
+            new_dir = (data.get("path") or "").strip()
+            try:
+                result = set_storage_dir(new_dir, migrate=bool(data.get("migrate", True)))
+            except (ValueError, OSError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            self._send_json({"ok": True, **result, "records": len(list_records())})
+            return
+
         self.send_error(404)
+
+    def _fs_list(self, raw: str) -> dict:
+        """目录浏览：空 path 返回顶层（Windows 列盘符，POSIX 列根目录）。"""
+        if not raw:
+            if os.name == "nt":
+                roots = [f"{c}:\\" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if Path(f"{c}:\\").exists()]
+            else:
+                roots = ["/"]
+            return {"ok": True, "path": "", "parent": "", "entries": roots}
+        p = Path(raw).expanduser()
+        try:
+            p = p.resolve()
+            if p.is_file():
+                p = p.parent
+            entries = sorted((d.name for d in p.iterdir() if d.is_dir()), key=str.lower)
+        except OSError as exc:
+            return {"ok": False, "error": f"无法读取目录：{exc}"}
+        parent = str(p.parent) if p.parent != p else ""
+        return {"ok": True, "path": str(p), "parent": parent, "entries": entries[:500]}
 
     def do_PATCH(self) -> None:
         path = urlparse(self.path).path

@@ -5,16 +5,38 @@
 
 import json
 import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
 from pathlib import Path
 from urllib.parse import urlparse
 
-# 数据文件始终放在仓库根：parents[0]=core, [1]=xingren, [2]=仓库根。
-_DATA_DIR = Path(os.environ.get("XINGREN_DATA_DIR") or Path(__file__).resolve().parents[2])
-DATA_DIR = _DATA_DIR
-DB_PATH = _DATA_DIR / "metadata.db"
+# 仓库根：parents[0]=core, [1]=xingren, [2]=仓库根（XINGREN_DATA_DIR 可兜底覆盖）。
+# config.json 固定放这里——它只记录「本地数据放在哪个存储目录」，必须跟着代码走。
+# 数据库、图片缓存等本地私有数据统一放在「存储目录」：默认仓库根，UI 里可整体迁移。
+_BASE_DIR = Path(os.environ.get("XINGREN_DATA_DIR") or Path(__file__).resolve().parents[2])
+CONFIG_PATH = _BASE_DIR / "config.json"
+
+
+def _load_config() -> dict:
+    try:
+        if CONFIG_PATH.exists():
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _save_config(cfg: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_cfg = _load_config()
+DATA_DIR = Path(_cfg["storage_dir"]).expanduser() if _cfg.get("storage_dir") else _BASE_DIR
+DB_PATH = DATA_DIR / "metadata.db"
 
 _SCHEMA_RECORDS = """
 CREATE TABLE IF NOT EXISTS records (
@@ -193,6 +215,97 @@ def _db():
             yield conn
     finally:
         conn.close()
+
+
+# ──────────────────────── 存储目录（本地私有数据统一存放处） ────────────────────────
+
+def get_storage_paths() -> dict:
+    """当前存储目录及其中的数据库、图片缓存位置。"""
+    return {
+        "path": str(DATA_DIR),
+        "db_path": str(DB_PATH),
+        "cache_dir": str(DATA_DIR / "cache" / "img"),
+    }
+
+
+def get_cache_dir() -> Path:
+    """图片缓存目录（跟随存储目录，切换后自动指向新位置）。"""
+    return DATA_DIR / "cache" / "img"
+
+
+def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
+    """切换存储目录：数据库、图片缓存等本地私有数据整体迁移过去。
+
+    - 相对路径按仓库根解析；输入的是文件而不是目录时拒绝
+    - migrate=True 时：数据库用 SQLite backup 迁移（含 WAL 合并）后删除旧文件，
+      cache/ 目录整体移走——项目目录里不再残留本地数据
+    - 目标目录已有 metadata.db 时拒绝，避免覆盖既有数据
+    - 结果写入 config.json（仓库根），下次启动沿用；调用后立即生效，无需重启
+    """
+    global DATA_DIR, DB_PATH
+    raw = (new_dir or "").strip()
+    if not raw:
+        raise ValueError("目录不能为空")
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = _BASE_DIR / target
+    if target.is_file():
+        raise ValueError(f"请指定目录而不是文件：{target}")
+    try:
+        target = target.resolve()
+    except OSError as exc:
+        raise ValueError(f"路径无效：{exc}") from exc
+
+    old_data_dir = DATA_DIR
+    old_db = Path(DB_PATH)
+    old_cache = old_data_dir / "cache"
+    try:
+        same = target == old_data_dir.resolve()
+    except OSError:
+        same = target == old_data_dir
+    if same:
+        return {**get_storage_paths(), "migrated": False}
+
+    target.mkdir(parents=True, exist_ok=True)
+    dst_db = target / "metadata.db"
+    if dst_db.exists():
+        raise ValueError(f"目标目录已有 metadata.db，为避免覆盖数据请换一个目录：{dst_db}")
+
+    migrated = False
+    if migrate and old_db.exists():
+        # backup 会把 WAL 中未合并的数据一并写进目标，得到自包含的新库文件
+        src = sqlite3.connect(old_db)
+        dst = sqlite3.connect(dst_db)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        for leftover in (old_db, Path(str(old_db) + "-wal"), Path(str(old_db) + "-shm")):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass  # 删不掉只是旧文件残留，不影响新目录使用
+        migrated = True
+    if migrate and old_cache.exists():
+        dst_cache = target / "cache"
+        if dst_cache.exists():
+            shutil.copytree(old_cache, dst_cache, dirs_exist_ok=True)
+            shutil.rmtree(old_cache, ignore_errors=True)
+        else:
+            shutil.move(str(old_cache), str(dst_cache))
+        migrated = True
+
+    DATA_DIR = target
+    DB_PATH = dst_db
+    cfg = _load_config()
+    if target == _BASE_DIR:
+        cfg.pop("storage_dir", None)  # 切回默认目录，配置无需冗余记录
+    else:
+        cfg["storage_dir"] = str(target)
+    cfg.pop("db_path", None)  # 清掉旧版「数据库单独指定位置」的配置键
+    _save_config(cfg)
+    return {**get_storage_paths(), "migrated": migrated}
 
 
 # ──────────────────────── Records ────────────────────────

@@ -20,6 +20,7 @@
       <option value="html">HTML</option>
     </select>
     <button id="proxyPanelBtn" class="btn-ghost">代理</button>
+    <button id="dbPanelBtn" class="btn-ghost">存储</button>
     <input id="searchInput" class="input search" placeholder="搜索标题或链接…">
   </header>
 
@@ -120,6 +121,42 @@
 
       <div class="modal-actions">
         <button id="proxyClose" class="btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 存储目录设置（数据库、缓存等本地私有数据的统一存放处） -->
+  <div id="dbMask" class="modal-mask" hidden>
+    <div class="modal db-modal">
+      <div class="modal-title">存储目录</div>
+      <div class="proxy-section">
+        <label>当前位置（本地私有数据，不随项目目录走）</label>
+        <div id="dbCurrent" class="db-current">加载中…</div>
+      </div>
+      <div class="proxy-section">
+        <label>切换到新目录</label>
+        <div class="proxy-row">
+          <input id="dbPathInput" class="input grow" placeholder="可直接输入路径，或点「浏览」点选" spellcheck="false">
+          <button id="dbBrowse" class="btn-ghost">浏览…</button>
+          <button id="dbSave" class="btn-primary">保存</button>
+        </div>
+        <div id="fsPicker" class="fs-picker" hidden>
+          <div class="fs-nav">
+            <button id="fsUp" class="btn-ghost">↑ 上级</button>
+            <span id="fsPath" class="fs-path"></span>
+          </div>
+          <div id="fsList" class="fs-list"></div>
+          <div class="fs-actions">
+            <span class="fs-hint">进入目标文件夹后，点右侧按钮选中</span>
+            <button id="fsPick" class="btn-primary">选中此目录</button>
+          </div>
+        </div>
+        <div class="proxy-hint">保存后数据库（metadata.db）、图片缓存（cache/）等本地私有数据
+          会整体迁移到新目录，原位置文件移走，不再占用项目目录；立即生效，无需重启。
+          目标目录里已有 metadata.db 时会拒绝，避免覆盖数据。</div>
+      </div>
+      <div class="modal-actions">
+        <button id="dbClose" class="btn-ghost">关闭</button>
       </div>
     </div>
   </div>

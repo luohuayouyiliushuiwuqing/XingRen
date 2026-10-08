@@ -8,6 +8,80 @@
 
 ---
 
+## 2026-10-08 19:50:27 +0800
+
+- **用户**: XiaoWin
+- **系统**: Microsoft Windows 11 专业版 · 10.0.26200 · AMD64 · 本机
+- **内容**: 本地数据升级为统一「存储目录」（数据库+缓存整体迁移），路径改为界面点选（8 文件）
+
+  **1. 存储目录（替代上一条的单一数据库路径）**
+
+  - `records.py`：config.json（仓库根，gitignore）改记 `storage_dir`（清掉旧 `db_path` 键）；
+    `DATA_DIR`/`DB_PATH`/`get_cache_dir()` 全部跟随存储目录，`config.json` 本身固定在仓库根
+    （它只记录「数据放哪」，必须跟着代码走）
+  - `set_storage_dir(path, migrate)`：数据库用 SQLite backup 迁移（含 WAL 合并）后删除旧文件、
+    `cache/` 整体 `shutil.move`——**项目目录不再残留本地私有数据**；目标已有 metadata.db 拒绝、
+    传入文件/空路径拒绝、切回默认目录时配置键自动清理；立即生效无需重启
+  - `server.py`：`GET/POST /api/storage-dir`（旧 `/api/db-path` 保留兼容）；
+    `handle_img` 改用 `get_cache_dir()` 每次动态取，切换后新缓存写入新位置
+  - **新增 `GET /api/fs/list?path=`**：目录浏览接口——空 path 返回盘符列表（C:\ D:\…），
+    否则返回子目录 + parent；不存在/无权限返回可读错误
+
+  **2. 路径改为界面点选（不再手写）**
+
+  - `index.html`：工具栏「数据库」按钮改为「存储」；弹窗重做——当前位置展示
+    （目录/数据库/缓存三行）+ 输入框 + 「浏览…」+ 目录点选器（fs-picker：
+    上级导航、路径面包屑、目录列表点击进入、「选中此目录」回填输入框）
+  - `app.js`：`openDbPanel` / `loadFs` / `saveDbPath` + `fsState` 导航状态；
+    保存成功自动 `loadRecords()` 从新存储目录刷新
+  - `style.css`：`.fs-picker` / `.fs-nav` / `.fs-item` / `.fs-actions` 样式与 `.db-modal` 宽度
+
+  **3. 配套**
+
+  - README：数据文件说明、特性列表、API 表同步（storage-dir / fs/list）
+  - `.gitignore` 已含 `config.json`（上一批）
+
+  验证：`set_storage_dir` 单测 7 组全过（迁出后旧库/旧缓存删除、写入只进新库、
+  同目录 no-op、已占用目录/文件/空路径拒绝、迁回后配置键清理、测试数据还原）；
+  重启 4000 服务后 API 往返：切走 migrated=true → 新位置缓存目录生成并成功缓存图片（200）
+  → 切回还原；`fs/list` 盘符/目录/父级/错误路径四种情况正确；页面 200 含新结构；
+  JS/Python 语法通过。
+
+## 2026-10-08 19:36:43 +0800
+
+- **用户**: XiaoWin
+- **系统**: Microsoft Windows 11 专业版 · 10.0.26200 · AMD64 · 本机
+- **内容**: 数据库位置可在 UI 内修改；看板改全宽网格分布（6 文件）
+
+  **1. 数据库位置可配置**
+
+  - `records.py`：新增仓库根 `config.json`（已 gitignore）持久化 `db_path`，
+    启动时读取生效；`set_db_path()` 支持——目录或无 .db 后缀自动补 `metadata.db`、
+    相对路径按仓库根解析、目标不存在时用 SQLite `backup` API 把现有库完整复制过去
+    （含 WAL，原文件保留）、目标为无效 SQLite 时拒绝；`DB_PATH` 模块级切换，
+    短连接模式下**立即生效无需重启**
+  - `server.py`：新增 `GET /api/db-path`（读当前路径）、
+    `POST /api/db-path`（`{path, migrate}` 切换并返回新路径/是否复制/记录数）
+  - `index.html`：工具栏加「数据库」按钮 + 设置弹窗（当前路径展示、
+    新位置输入、迁移提示）；`app.js`：`openDbPanel` / `saveDbPath`，
+    切换成功后自动 `loadRecords()` 从新库刷新
+
+  **2. 看板全宽分布（修「单独一列」）**
+
+  - 根因：`.board` 是 grid，域名分组 `section.domain-group` 作为 grid 单元
+    只占一格（约 240px 宽），组内 `.domain-grid` 被挤成单列竖排；
+    平铺分支直塞 `.board` 同样受影响
+  - `style.css`：`.board` 改纵向 flex（域名组各占整行），
+    平铺与组内统一走 `.board-grid` / `.domain-grid` 的
+    `auto-fill minmax(240px, 1fr)` 多列网格；去掉 `.card` 的
+    `max-width: 320px`，卡片撑满单元格、整行均匀铺满可用宽度
+  - `app.js`：平铺分支用 `div.board-grid` 包裹卡片
+
+  验证：`set_db_path` 单测 6 项全过（目录补文件、复制迁移、写入只进新库、
+  切回不覆盖原库、空路径/无效文件拒绝）；重启 4000 服务后
+  `GET/POST /api/db-path` 往返正常（切走 copied=true → 切回 copied=false）；
+  页面 200 含新按钮；线上静态资源为新版；JS/Python 语法通过。
+
 ## 2026-10-08 19:17:05 +0800
 
 - **用户**: XiaoWin

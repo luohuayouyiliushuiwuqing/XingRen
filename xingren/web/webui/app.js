@@ -255,7 +255,11 @@ function render() {
   /* 分组条件放宽到「条数 > 20」：单域名上千条时也走分组，
      否则平铺分支会一次性建出全部卡片 DOM 卡死浏览器 */
   if (sortedDomains.length <= 1 && visible.length <= 20) {
-    for (const r of visible) board.appendChild(createCard(r));
+    // 平铺也包一层多列网格：.board 是纵向 flex，直接塞卡片会排成一列
+    const grid = document.createElement("div");
+    grid.className = "board-grid";
+    for (const r of visible) grid.appendChild(createCard(r));
+    board.appendChild(grid);
   } else {
     for (const [domain, recs] of sortedDomains) {
       const section = document.createElement("div");
@@ -806,6 +810,102 @@ async function importFromFile(file) {
   setStatus(`导入完成：${parts.join("，")}`, ok > 0 ? "" : "err");
 }
 
+/* ---------- 存储目录（数据库、缓存等本地私有数据的统一存放处） ---------- */
+const fsState = { path: "", parent: "", storage: "" };
+
+function fsJoin(dir, name) {
+  if (!dir) return name;
+  const sep = dir.includes("\\") ? "\\" : "/";
+  return /[\\\/]$/.test(dir) ? dir + name : dir + sep + name;
+}
+
+async function openDbPanel() {
+  $("dbMask").hidden = false;
+  $("fsPicker").hidden = true;
+  $("dbCurrent").textContent = "加载中…";
+  try {
+    const d = await (await fetch("/api/storage-dir")).json();
+    fsState.storage = d.path;
+    $("dbCurrent").textContent =
+      `目录: ${d.path}\n数据库: ${d.db_path}\n图片缓存: ${d.cache_dir}`;
+    $("dbCurrent").style.whiteSpace = "pre-line";
+  } catch (e) {
+    $("dbCurrent").textContent = "读取失败：" + e.message;
+  }
+  $("dbPathInput").value = "";
+}
+
+async function loadFs(path) {
+  const box = $("fsList");
+  $("fsPicker").hidden = false;
+  $("fsPath").textContent = path || "（选择盘符 / 根目录）";
+  box.innerHTML = '<div class="fs-empty">加载中…</div>';
+  try {
+    const d = await (
+      await fetch("/api/fs/list?path=" + encodeURIComponent(path))
+    ).json();
+    if (!d.ok) {
+      box.innerHTML = "";
+      box.appendChild(el("div", "fs-empty", d.error || "读取失败"));
+      return;
+    }
+    fsState.path = d.path;
+    fsState.parent = d.parent;
+    $("fsPath").textContent = d.path || "（选择盘符 / 根目录）";
+    $("fsUp").disabled = !d.parent;
+    box.innerHTML = "";
+    if (!d.entries.length) {
+      box.appendChild(el("div", "fs-empty", "（无子目录）"));
+      return;
+    }
+    for (const name of d.entries) {
+      const btn = el("button", "fs-item", name);
+      btn.addEventListener("click", () => loadFs(fsJoin(d.path, name)));
+      box.appendChild(btn);
+    }
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "fs-empty", "读取失败：" + e.message));
+  }
+}
+
+async function saveDbPath() {
+  const path = $("dbPathInput").value.trim();
+  if (!path) {
+    setStatus("请先选择或输入存储目录", "err");
+    return;
+  }
+  $("dbSave").disabled = true;
+  setStatus("正在迁移存储目录（数据库 + 缓存）…", "busy");
+  try {
+    const resp = await fetch("/api/storage-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, migrate: true }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      setStatus("切换失败：" + data.error, "err");
+      return;
+    }
+    fsState.storage = data.path;
+    $("dbCurrent").textContent =
+      `目录: ${data.path}\n数据库: ${data.db_path}\n图片缓存: ${data.cache_dir}`;
+    $("dbPathInput").value = "";
+    $("fsPicker").hidden = true;
+    await loadRecords(); // 从新存储目录重新加载
+    setStatus(
+      `存储目录已切换到 ${data.path}` +
+        (data.migrated ? "（数据与缓存已迁移）" : "") +
+        `，共 ${data.records} 条`
+    );
+  } catch (e) {
+    setStatus("切换失败：" + e.message, "err");
+  } finally {
+    $("dbSave").disabled = false;
+  }
+}
+
 /* ---------- 事件绑定 ---------- */
 
 function init() {
@@ -876,6 +976,26 @@ function init() {
   $("proxyDetectBtn").addEventListener("click", () => detectProxy({ fill: true }));
   $("ruleAddBtn").addEventListener("click", addRule);
   $("rulePatternInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
+
+  $("dbPanelBtn").addEventListener("click", openDbPanel);
+  $("dbSave").addEventListener("click", saveDbPath);
+  $("dbPathInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveDbPath();
+  });
+  $("dbBrowse").addEventListener("click", () => loadFs(fsState.path || fsState.storage || ""));
+  $("fsUp").addEventListener("click", () => {
+    if (fsState.parent) loadFs(fsState.parent);
+  });
+  $("fsPick").addEventListener("click", () => {
+    if (fsState.path) {
+      $("dbPathInput").value = fsState.path;
+      $("fsPicker").hidden = true;
+    }
+  });
+  $("dbClose").addEventListener("click", () => { $("dbMask").hidden = true; });
+  $("dbMask").addEventListener("click", (e) => {
+    if (e.target === $("dbMask")) $("dbClose").click();
+  });
 
   $("detailClose").addEventListener("click", closeDetail);
   $("detailRefresh").addEventListener("click", async () => {
