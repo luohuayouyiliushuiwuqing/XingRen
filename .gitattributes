@@ -1,0 +1,15 @@
+# 跨平台（Windows + Ubuntu）协作统一换行：文本文件一律 LF、UTF-8 无 BOM。
+# 工作区与仓库一致，避免两端互相覆盖 / Edit 工具匹配失败。
+* text=auto eol=lf
+
+# 二进制文件不做转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.db binary
+*.woff binary
+*.woff2 binary
+*.pyc binary

@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-10-08 19:17:05 +0800
+
+- **用户**: XiaoWin
+- **系统**: Microsoft Windows 11 专业版 · 10.0.26200 · AMD64 · 本机（非开发机 igs-Y）
+- **内容**: CHANGE.md 审计与倒序修正（仅本文件）
+
+  审计方式：逐条把条目与 git 提交（7569e5c…adc0d14 共 17 个）及当前代码对照。
+
+  - **一致性通过**：10:04 建立约定后的每个提交均有对应条目，无漏记、无幽灵条目；
+    抽查 14 项特性声明（`insert_quick_records`、`fetched`、`_MULTI_TLDS` 前后端、
+    `detect_proxy`、`/api/records/quick`、`parseBookmarks`、`thumb-actions`、
+    `_is_domestic` 两端、`cache/` 忽略、`xingren-webui` 入口等）在当前代码中全部存在
+  - **修正倒序违规**：`17:15:38`（卡片按钮拆分）与 `17:05:22`（数据库重构）两条
+    原插在 16:37 与 16:12 之间，违反「倒序（最新在上）」约定；已按时间归位到
+    `17:15:44` 与 `17:04:48` 之间，**仅移动位置，内容零改动**
+  - **发现（未改动，仅记录）**：
+    1. 18:39 条目末尾「服务进程 17:29:59 启动…需重启」对本机已过期——
+       本机 4000 端口服务于 19:08:41 以 `xingren-webui` 重启，运行 adc0d14 新代码
+    2. 12:27 条目与 TODO 所述 `CLAUDE.md` 在工作区不存在（未入库且无本地副本）；
+       维护约定实际只保留在本文件头部与 TODO 头部
+    3. 本机 `metadata.db`（创建于 10-07 21:49）实测 **0 条记录**，
+       `/api/records` 同为 0；18:39 条目的「32 条真实记录」按三字段（系统=Ubuntu
+       igs-Y）指开发机的库，本机与之不同步——如需本机有数据，
+       用快照导入或从开发机导出同步
+
 ## 2026-10-08 18:39:56 +0800
 
 - **用户**: haijie yin
@@ -131,6 +156,47 @@
   验证：JS 语法 / Python 编译；迁移后 `proxy` 列已删、`need_proxy` 已生成；
   三级优先级 5 个断言全过（含规则压过域名规则）；测试规则已清理。
 
+## 2026-10-08 17:15:38 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 卡片操作按钮拆分——详情/重新抓取移到缩略图右上角（2 文件，+34 / -30）
+
+  - `app.js`：底部操作条拆为两组——`thumb-actions`（右上角：详情/重新抓取）
+    和 `actions`（底部：重命名/标签/删除）；代码压缩为单行事件绑定
+  - `style.css`：新增 `.thumb-actions`（`position: absolute; top:6px; right:6px`），
+    半透明白底 + `backdrop-filter: blur(4px)` 毛玻璃效果，悬停时 `opacity: 1`
+
+  验证：JS 语法通过；`thumb-actions` / `topActions` / `actions.append` 引用正确。
+
+## 2026-10-08 17:05:22 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 数据库重构——域名独立管理 + 多对多标签（5 文件，+543 / -255）
+
+  - `records.py`（重写）：新建 `domains` / `tags` / `record_tags` 三张表；
+    迁移 `group_name` → tags（一次性，完成后删除 `group_name` 列）；
+    自动从现有记录提取域名填充 `domains` 表；
+    新增 domains/tags/record_tags 完整 CRUD 函数；
+    `_row_to_record` 返回 `domain`（从 URL 提取）和 `tags` 列表
+  - `server.py`（重写）：新增 `GET /api/domains`、`GET /api/tags`、
+    `POST /api/tag`、`DELETE /api/tag`、`POST /api/record/tag`、
+    `DELETE /api/record/tag`、`PATCH /api/domain` 端点；
+    fetch/img 端点按域名查代理（`get_domain_proxy` 优先于全局代理）；
+    移除 `group_name` 相关逻辑
+  - `app.js`（重写）：state 改为 `selectedDomain` + `selectedTag` 双维度过滤；
+    `buildSidebar` 改为域名+标签两段列表（点击切换过滤，再点取消）；
+    卡片操作条「分组」→「标签」；`openTag` 弹窗显示所有标签，✓/+ 切换关联；
+    新增 `openDomain` 域名管理弹窗（编辑别名和代理）；
+    `render()` 按域名+标签组合过滤，按域名分组显示
+  - `index.html`：替换分组弹窗为标签弹窗（标签列表+新建输入）+ 域名管理弹窗
+  - `style.css`：`.sidebar-label`（域名/标签分段标题）、`.tag-item`/`.tag-toggle`
+    （标签选择项）、`.tag-badge`（卡片标签徽标）、`.domain-form`（域名表单）
+
+  验证：JS 语法 / Python 编译 / 数据库迁移（group_name 删除，domains 11 条自动填充）/
+  服务启动 200 / API 全部 200 / 前端 25 处新功能引用。
+
 ## 2026-10-08 17:04:48 +0800
 
 - **用户**: haijie yin
@@ -196,47 +262,6 @@
 
   验证：首次请求 1.22s（走网络）→ 二次 0.02s（命中本地，快 61 倍）；
   两次响应字节一致；`git check-ignore` 覆盖 `cache/img/test.bin`。
-
-## 2026-10-08 17:15:38 +0800
-
-- **用户**: haijie yin
-- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
-- **内容**: 卡片操作按钮拆分——详情/重新抓取移到缩略图右上角（2 文件，+34 / -30）
-
-  - `app.js`：底部操作条拆为两组——`thumb-actions`（右上角：详情/重新抓取）
-    和 `actions`（底部：重命名/标签/删除）；代码压缩为单行事件绑定
-  - `style.css`：新增 `.thumb-actions`（`position: absolute; top:6px; right:6px`），
-    半透明白底 + `backdrop-filter: blur(4px)` 毛玻璃效果，悬停时 `opacity: 1`
-
-  验证：JS 语法通过；`thumb-actions` / `topActions` / `actions.append` 引用正确。
-
-## 2026-10-08 17:05:22 +0800
-
-- **用户**: haijie yin
-- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
-- **内容**: 数据库重构——域名独立管理 + 多对多标签（5 文件，+543 / -255）
-
-  - `records.py`（重写）：新建 `domains` / `tags` / `record_tags` 三张表；
-    迁移 `group_name` → tags（一次性，完成后删除 `group_name` 列）；
-    自动从现有记录提取域名填充 `domains` 表；
-    新增 domains/tags/record_tags 完整 CRUD 函数；
-    `_row_to_record` 返回 `domain`（从 URL 提取）和 `tags` 列表
-  - `server.py`（重写）：新增 `GET /api/domains`、`GET /api/tags`、
-    `POST /api/tag`、`DELETE /api/tag`、`POST /api/record/tag`、
-    `DELETE /api/record/tag`、`PATCH /api/domain` 端点；
-    fetch/img 端点按域名查代理（`get_domain_proxy` 优先于全局代理）；
-    移除 `group_name` 相关逻辑
-  - `app.js`（重写）：state 改为 `selectedDomain` + `selectedTag` 双维度过滤；
-    `buildSidebar` 改为域名+标签两段列表（点击切换过滤，再点取消）；
-    卡片操作条「分组」→「标签」；`openTag` 弹窗显示所有标签，✓/+ 切换关联；
-    新增 `openDomain` 域名管理弹窗（编辑别名和代理）；
-    `render()` 按域名+标签组合过滤，按域名分组显示
-  - `index.html`：替换分组弹窗为标签弹窗（标签列表+新建输入）+ 域名管理弹窗
-  - `style.css`：`.sidebar-label`（域名/标签分段标题）、`.tag-item`/`.tag-toggle`
-    （标签选择项）、`.tag-badge`（卡片标签徽标）、`.domain-form`（域名表单）
-
-  验证：JS 语法 / Python 编译 / 数据库迁移（group_name 删除，domains 11 条自动填充）/
-  服务启动 200 / API 全部 200 / 前端 25 处新功能引用。
 
 ## 2026-10-08 16:12:38 +0800
 
