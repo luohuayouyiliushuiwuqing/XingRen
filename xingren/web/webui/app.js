@@ -30,14 +30,28 @@ function hostOf(url) {
   }
 }
 
-/* 提取可注册域名：chat.deepseek.com → deepseek.com，www.example.com.cn → example.com.cn */
+/* 多段公共后缀：co.uk / com.cn / com.au … —— 必须与后端 records._MULTI_TLDS 一致，
+   否则前端分组与后端域名代理规则对不上（bar.co.uk 会被截成 co.uk） */
+const MULTI_TLDS = [
+  ".co.uk", ".org.uk", ".ac.uk", ".gov.uk", ".me.uk",
+  ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn",
+  ".co.jp", ".ne.jp", ".or.jp", ".ac.jp",
+  ".com.au", ".net.au", ".org.au",
+  ".co.nz", ".com.hk", ".com.tw", ".com.sg",
+  ".com.br", ".com.mx", ".co.kr", ".co.in", ".com.ar",
+];
+
+/* 提取可注册域名：chat.deepseek.com → deepseek.com，bar.co.uk → bar.co.uk */
 function rootDomain(host) {
-  const parts = host.split(".");
-  if (parts.length <= 2) return host;
-  const last2 = parts.slice(-2).join(".");
-  /* 多段后缀：.com.cn / .net.cn / .org.cn / .co.uk 等 → 取最后 3 段 */
-  if (/^(com|net|org|gov|edu)\.\w{2}$/.test(last2)) return parts.slice(-3).join(".");
-  return last2;
+  const h = (host || "").toLowerCase();
+  for (const tld of MULTI_TLDS) {
+    if (h.endsWith(tld)) {
+      const head = h.slice(0, -tld.length);
+      return head ? head.split(".").pop() + tld : h;
+    }
+  }
+  const parts = h.split(".");
+  return parts.length <= 2 ? h : parts.slice(-2).join(".");
 }
 
 /* ---------- 数据加载与渲染 ---------- */
@@ -139,7 +153,8 @@ function createCard(record) {
   title.target = "_blank";
   title.rel = "noopener";
   const domainRow = el("div", "domain");
-  domainRow.appendChild(el("span", "dot " + (record.success ? "ok" : "fail")));
+  const dot = !record.fetched ? "pending" : (record.success ? "ok" : "fail");
+  domainRow.appendChild(el("span", "dot " + dot));
   domainRow.appendChild(el("span", null, host));
   if (record.tags && record.tags.length) {
     for (const t of record.tags) domainRow.appendChild(el("span", "tag-badge", t.name));
@@ -237,7 +252,9 @@ function render() {
   }
   const sortedDomains = [...domainMap.entries()].sort((a, b) => b[1].length - a[1].length);
 
-  if (sortedDomains.length <= 1) {
+  /* 分组条件放宽到「条数 > 20」：单域名上千条时也走分组，
+     否则平铺分支会一次性建出全部卡片 DOM 卡死浏览器 */
+  if (sortedDomains.length <= 1 && visible.length <= 20) {
     for (const r of visible) board.appendChild(createCard(r));
   } else {
     for (const [domain, recs] of sortedDomains) {
@@ -248,10 +265,21 @@ function render() {
       header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
       const grid = document.createElement("div");
       grid.className = "domain-grid";
-      for (const r of recs) grid.appendChild(createCard(r));
       section.append(header, grid);
-      if (recs.length > 20) section.classList.add("collapsed");
-      header.addEventListener("click", () => section.classList.toggle("collapsed"));
+
+      const collapsed = recs.length > 20;
+      if (collapsed) {
+        section.classList.add("collapsed");   // 折叠组先不建卡片，展开时再补
+      } else {
+        for (const r of recs) grid.appendChild(createCard(r));
+      }
+      header.addEventListener("click", () => {
+        const opening = section.classList.contains("collapsed");
+        if (opening && !grid.childElementCount) {
+          for (const r of recs) grid.appendChild(createCard(r));
+        }
+        section.classList.toggle("collapsed");
+      });
       board.appendChild(section);
     }
   }
@@ -532,10 +560,25 @@ async function addRule() {
 
 /* ---------- 详情弹层（展示 .space-y-2 提取的标签值字段） ---------- */
 
-function openDetail(record) {
+async function openDetail(record) {
   state.detailTarget = record;
-  renderDetail(record);
   $("detailMask").hidden = false;
+  if (record.fetched) { renderDetail(record); return; }
+
+  /* 快照导入的记录没有 details：打开详情时才补抓（按需加载） */
+  renderDetailLoading();
+  await fetchRecord(record.url);   // 内部 upsert 会替换 state.records 里的对象
+  const fresh = state.records.find(r => r.url === record.url) || record;
+  if (state.detailTarget) {
+    state.detailTarget = fresh;
+    renderDetail(fresh);           // 不递归：抓取失败也只提示一次，再点才重试
+  }
+}
+
+function renderDetailLoading() {
+  const box = $("detailFields");
+  box.innerHTML = "";
+  box.appendChild(el("div", "detail-empty", "正在抓取详情…（首次需要数秒）"));
 }
 
 function renderDetail(record) {
@@ -544,6 +587,10 @@ function renderDetail(record) {
   const box = $("detailFields");
   box.innerHTML = "";
 
+  if (!record.fetched) {
+    box.appendChild(el("div", "detail-empty", "详情尚未抓取，点「重新抓取」或再次打开本弹层"));
+    return;
+  }
   if (!record.success) {
     box.appendChild(el("div", "detail-empty", "该记录抓取失败，点「重新抓取」再试"));
     return;
@@ -661,27 +708,73 @@ function doExport(format) {
 
 /* ---------- TXT 导入 ---------- */
 
-function parseUrls(text, fileName) {
+/* 解析导入文件 → {isHtml, items}。
+   HTML：读出 HREF + 标题 + 封面 + 标签，可完全离线快照导入。
+   TXT ：只有 URL，无元数据可读，仍需走抓取流程。 */
+function parseBookmarks(text, fileName) {
+  const seen = new Set();
+  const items = [];
+  const push = (item) => {
+    if (!/^https?:\/\//i.test(item.url) || seen.has(item.url)) return;
+    seen.add(item.url);
+    items.push(item);
+  };
+
   if (/\.html?$/i.test(fileName)) {
-    /* HTML（Netscape Bookmark 格式）：提取所有 <A HREF="..."> */
     const doc = new DOMParser().parseFromString(text, "text/html");
-    return [...doc.querySelectorAll("a[href]")].map(a => a.href).filter(u => /^https?:\/\//i.test(u));
+    for (const a of doc.querySelectorAll("a[href]")) {
+      push({
+        url: a.href,
+        title: (a.textContent || "").replace(/\s+/g, " ").trim(),
+        thumbnail: a.getAttribute("data-cover") || "",
+        favicon: "",
+        tags: (a.getAttribute("tags") || "").split(",").map(s => s.trim()).filter(Boolean),
+      });
+    }
+    return { isHtml: true, items };
   }
-  /* TXT：一行一个 URL */
-  return text.split(/\r?\n/).map(l => l.trim()).filter(l => /^https?:\/\//i.test(l));
+
+  for (const line of text.split(/\r?\n/)) push({ url: line.trim() });
+  return { isHtml: false, items };
 }
 
 async function importFromFile(file) {
   const text = await file.text();
-  const urls = [...new Set(parseUrls(text, file.name))];  // 去重
-  if (!urls.length) { setStatus("文件中未找到 http 开头的 URL", "err"); return; }
+  const { isHtml, items } = parseBookmarks(text, file.name);
+  if (!items.length) { setStatus("文件中未找到 http 开头的 URL", "err"); return; }
 
+  $("importBtn").disabled = true;
+
+  /* ── HTML 快照导入：标题/封面/标签现成，完全不联网，5000 条秒级 ── */
+  if (isHtml) {
+    try {
+      setStatus(`快照导入中…（${items.length} 条，不联网）`, "busy");
+      const resp = await fetch("/api/records/quick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const data = await resp.json();
+      if (!data.ok) { setStatus("快照导入失败：" + data.error, "err"); return; }
+      await loadRecords();
+      const parts = [`快照导入完成：新增 ${data.inserted} 条`];
+      if (data.skipped) parts.push(`跳过 ${data.skipped} 条（已存在）`);
+      parts.push("详情字段在打开时按需抓取");
+      setStatus(parts.join("，"));
+    } catch (e) {
+      setStatus("快照导入失败：" + e.message, "err");
+    } finally {
+      $("importBtn").disabled = false;
+    }
+    return;
+  }
+
+  /* ── TXT：只有 URL，保留原有逐条抓取 ── */
+  const urls = items.map(i => i.url);
   const proxy = state.globalProxy;
   const existing = new Set(state.records.map(r => r.url));
   const toFetch = urls.filter(u => !existing.has(u));
   const skipped = urls.length - toFetch.length;
-
-  $("importBtn").disabled = true;
   let done = 0, ok = 0, fail = 0;
   const CONCURRENCY = 5;
 

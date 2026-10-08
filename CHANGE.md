@@ -8,6 +8,47 @@
 
 ---
 
+## 2026-10-08 18:39:56 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 快照导入 + 按需补抓，解决 5000 条 HTML 导入耗时数小时的问题（4 文件）
+
+  **为什么**：原流程每条走 `/api/fetch` 三级降级（最坏 120s/条），
+  5000 条 ÷ 并发 5 ≈ 2.8~33 小时，且关浏览器即断。
+  但 Raindrop 导出的 HTML 每条已自带 title / TAGS / DATA-COVER，
+  只有 `details` 需要抓。
+
+  - `records.py`：新增 `fetched` 列（`ADD COLUMN … NOT NULL DEFAULT 1`，现有行自动得 1，
+    **无需重建表**）——0=快照导入未抓，1=已抓取；`insert_quick_records()` 单事务批量入库
+    （写记录 + 填 domains + 建标签并关联，**完全不联网**）；`upsert_record` 置 `fetched=1`；
+    `_row_to_record` 改收 `tags` 列表参数，`list_records` 用一次 JOIN 建 map —— **消除 N+1**
+  - `server.py`：新增 `POST /api/records/quick`
+  - `app.js`：
+    - `parseBookmarks()` 取代 `parseUrls`，HTML 读出 HREF/标题/封面/标签，TXT 只有 URL
+    - HTML → 快照导入分支（单次 POST，完成后 `loadRecords()` 一次刷新）
+    - `openDetail` 懒加载：`!fetched` 时先显示「正在抓取详情…」，抓完再渲染（不递归，失败只提示一次）
+    - 状态点三分：`.pending` 灰（未抓）/ `.ok` 绿 / `.fail` 红
+    - **折叠组延迟建卡片**：`recs.length > 20` 的组先不建 DOM，展开时才补；
+      分组判定放宽为 `域名数 > 1 || 条数 > 20`（否则单域名上千条会走平铺建出全部节点）
+  - `style.css`：`.dot.pending { background: var(--faint) }`
+
+  **附带修复**（验证 5000 条时暴露的既有 bug）：
+  - 前端 `rootDomain` 正则只覆盖 `com|net|org|gov|edu`，**漏了 `co`** → `bar.co.uk` 被截成 `co.uk`
+  - 后端 `_root_domain` **完全没有多段后缀处理** → `a.example.com.cn` 得到 `com.cn`
+  - 两者还不一致，导致域名分组与域名代理规则对不上
+  - 修法：两端共用同一份 `_MULTI_TLDS` 列表（26 个），8 个用例前后端输出完全一致
+  - 数据修复：删除错值域名行 `co.uk`，补入 `bar.co.uk`；`google.com(need_proxy=1)`、
+    `bilibili.com(别名)` 两处用户设置保留
+
+  **性能实测**：5000 条快照入库 **0.06s**（8.5 万条/秒）；`list_records` 5032 条 0.05s。
+
+  ⚠ **测试数据已清理**：验证时写入的 5000 条假记录、6 个测试标签、7 个示例域名
+  已全部删除，数据库恢复为 **32 条真实记录**（`demo1` 标签、两处域名设置均保留）。
+
+  ⚠ **你的服务进程是 17:29:59 启动的，跑的还是旧 `_root_domain`**，
+  会继续把 `bar.co.uk` 算成 `co.uk` 插库——**需要重启服务**。
+
 ## 2026-10-08 17:33:56 +0800
 
 - **用户**: haijie yin

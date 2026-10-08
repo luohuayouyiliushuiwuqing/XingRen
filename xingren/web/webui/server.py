@@ -19,9 +19,9 @@ from xingren.core.fetcher import _is_domestic, get_metadata
 from xingren.core.proxy import detect_proxy
 from xingren.core.records import (
     DATA_DIR, add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
-    get_domain_need_proxy, list_domains, list_proxy_rules, list_records, list_tags,
-    match_proxy_rule, remove_tag_from_record, set_title, update_domain,
-    upsert_proxy_rule, upsert_record,
+    get_domain_need_proxy, insert_quick_records, list_domains, list_proxy_rules,
+    list_records, list_tags, match_proxy_rule, remove_tag_from_record, set_title,
+    update_domain, upsert_proxy_rule, upsert_record,
 )
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
@@ -194,6 +194,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             rule = upsert_proxy_rule(pattern, bool(data.get("need_proxy", True)))
             self._send_json({"ok": True, "rule": rule})
+            return
+
+        if path == "/api/records/quick":
+            # 快照导入：只写已有元数据，不联网；details 留待打开详情时按需补抓
+            items = data.get("items") or []
+            if not isinstance(items, list) or not items:
+                self._send_json({"ok": False, "error": "缺少 items"}, 400)
+                return
+            result = insert_quick_records(items)
+            self._send_json({"ok": True, **result})
             return
 
         if path == "/api/proxy-detect":

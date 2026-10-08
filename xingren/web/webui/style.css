@@ -391,6 +391,7 @@ main {
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .dot.ok { background: var(--ok); }
 .dot.fail { background: var(--err); }
+.dot.pending { background: var(--faint); }  /* 灰 = 快照导入未抓取 */
 
 /* ---------- 状态栏 ---------- */
 /* 悬浮在页面底部：脱离文档流盖在内容上（footer 高度约 39px，

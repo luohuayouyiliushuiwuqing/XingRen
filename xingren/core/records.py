@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS records (
     thumbnail  TEXT NOT NULL DEFAULT '',
     favicon    TEXT NOT NULL DEFAULT '',
     success    INTEGER NOT NULL DEFAULT 0,
-    details    TEXT NOT NULL DEFAULT '[]'
+    details    TEXT NOT NULL DEFAULT '[]',
+    fetched    INTEGER NOT NULL DEFAULT 1
 )
 """
 
@@ -81,18 +82,46 @@ def _migrate_to_bool_proxy(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {table} DROP COLUMN proxy")
 
 
+# 多段公共后缀：co.uk / com.cn / com.au … —— 这类要连前一段一起取，
+# 否则 bar.co.uk 会被截成 co.uk，导致分组错乱、域名代理规则对不上。
+# 必须与前端 rootDomain() 保持同一份列表，否则两边分组口径不一致。
+_MULTI_TLDS = (
+    ".co.uk", ".org.uk", ".ac.uk", ".gov.uk", ".me.uk",
+    ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn",
+    ".co.jp", ".ne.jp", ".or.jp", ".ac.jp",
+    ".com.au", ".net.au", ".org.au",
+    ".co.nz", ".com.hk", ".com.tw", ".com.sg",
+    ".com.br", ".com.mx", ".co.kr", ".co.in", ".com.ar",
+)
+
+
 def _root_domain(url: str) -> str:
-    """从 URL 提取可注册域名（简化版：最后两段）。"""
+    """从 URL 提取可注册域名（处理多段公共后缀）。"""
     try:
         host = (urlparse(url).hostname or "").lower()
     except Exception:
         return ""
+    for tld in _MULTI_TLDS:
+        if host.endswith(tld):
+            head = host[: -len(tld)]
+            return f"{head.rsplit('.', 1)[-1]}{tld}" if head else host
     parts = host.split(".")
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
-def _row_to_record(row: sqlite3.Row, conn: sqlite3.Connection = None) -> dict:
-    record = {
+def _tags_for(conn: sqlite3.Connection, url: str) -> list[dict]:
+    """单条记录的标签（各调用方自己查，避免 list_records 出现 N+1）。"""
+    rows = conn.execute(
+        "SELECT t.id, t.name FROM tags t "
+        "JOIN record_tags rt ON rt.tag_id = t.id "
+        "WHERE rt.record_url = ? ORDER BY t.name",
+        (url,),
+    ).fetchall()
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+
+def _row_to_record(row: sqlite3.Row, tags: list[dict]) -> dict:
+    return {
         "url": row["url"],
         "title": row["title"],
         "thumbnail": row["thumbnail"],
@@ -100,17 +129,21 @@ def _row_to_record(row: sqlite3.Row, conn: sqlite3.Connection = None) -> dict:
         "success": bool(row["success"]),
         "details": json.loads(row["details"] or "[]"),
         "domain": _root_domain(row["url"]),
-        "tags": [],
+        "tags": tags,
+        "fetched": bool(row["fetched"]),
     }
-    if conn:
-        tag_rows = conn.execute(
-            "SELECT t.id, t.name FROM tags t "
-            "JOIN record_tags rt ON rt.tag_id = t.id "
-            "WHERE rt.record_url = ? ORDER BY t.name",
-            (row["url"],),
-        ).fetchall()
-        record["tags"] = [{"id": r["id"], "name": r["name"]} for r in tag_rows]
-    return record
+
+
+def _all_tags_map(conn: sqlite3.Connection) -> dict[str, list[dict]]:
+    """一次 JOIN 取全部记录的标签，返回 {record_url: [tag]} —— 消除 N+1。"""
+    result: dict[str, list[dict]] = {}
+    rows = conn.execute(
+        "SELECT rt.record_url, t.id, t.name FROM record_tags rt "
+        "JOIN tags t ON t.id = rt.tag_id ORDER BY t.name"
+    ).fetchall()
+    for r in rows:
+        result.setdefault(r["record_url"], []).append({"id": r["id"], "name": r["name"]})
+    return result
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
@@ -121,6 +154,13 @@ def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_SCHEMA_PROXY_RULES)
     conn.execute("PRAGMA journal_mode=WAL")
     _migrate_to_bool_proxy(conn)
+
+    # 迁移：fetched 列（0=快照导入未抓取，1=已抓取/尝试过）。
+    # ADD COLUMN 带 NOT NULL DEFAULT 合法，现有行自动得 1（都尝试过抓取），无需回填。
+    try:
+        conn.execute("SELECT fetched FROM records LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE records ADD COLUMN fetched INTEGER NOT NULL DEFAULT 1")
 
     # 迁移：group_name 列 → tags 表（一次性）
     try:
@@ -158,31 +198,33 @@ def _db():
 # ──────────────────────── Records ────────────────────────
 
 def list_records() -> list[dict]:
-    """全部记录，按插入顺序。"""
+    """全部记录，按插入顺序。标签用一次 JOIN 取，避免 N+1。"""
     with _db() as conn:
         rows = conn.execute("SELECT * FROM records ORDER BY rowid").fetchall()
-        return [_row_to_record(row, conn) for row in rows]
+        tag_map = _all_tags_map(conn)
+        return [_row_to_record(row, tag_map.get(row["url"], [])) for row in rows]
 
 
 def get_record(url: str) -> dict | None:
     with _db() as conn:
         row = conn.execute("SELECT * FROM records WHERE url = ?", (url,)).fetchone()
-        return _row_to_record(row, conn) if row else None
+        return _row_to_record(row, _tags_for(conn, url)) if row else None
 
 
 def upsert_record(new: dict) -> dict:
-    """按 URL 合并写入；抓取失败或标题为空时保留已有数据。"""
+    """按 URL 合并写入；抓取失败或标题为空时保留已有数据。置 fetched=1（真实抓取过）。"""
     with _db() as conn:
         old = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
         if old is not None and not new.get("success"):
-            return _row_to_record(old, conn)
+            return _row_to_record(old, _tags_for(conn, new["url"]))
         title = new.get("title", "") or (old["title"] if old is not None else "")
         conn.execute(
-            "INSERT INTO records (url, title, thumbnail, favicon, success, details) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO records (url, title, thumbnail, favicon, success, details, fetched) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1) "
             "ON CONFLICT(url) DO UPDATE SET title = excluded.title, "
             "thumbnail = excluded.thumbnail, favicon = excluded.favicon, "
-            "success = excluded.success, details = excluded.details",
+            "success = excluded.success, details = excluded.details, "
+            "fetched = 1",
             (
                 new["url"],
                 title,
@@ -197,7 +239,50 @@ def upsert_record(new: dict) -> dict:
         if domain:
             conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
         row = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
-        return _row_to_record(row, conn)
+        return _row_to_record(row, _tags_for(conn, new["url"]))
+
+
+def insert_quick_records(items: list[dict]) -> dict:
+    """快照批量入库：**不联网**，直接写入已有元数据，`fetched=0`。
+
+    items: [{url, title?, thumbnail?, favicon?, tags?: [str]}]
+    单事务处理，已存在的 URL 跳过。返回 {inserted, skipped}。
+    """
+    inserted = skipped = 0
+    with _db() as conn:
+        for item in items:
+            url = (item.get("url") or "").strip()
+            if not url:
+                continue
+            if conn.execute("SELECT 1 FROM records WHERE url = ?", (url,)).fetchone():
+                skipped += 1
+                continue
+            # success=1：HTML 已提供标题/封面，元数据有效（details 留待按需补抓）
+            conn.execute(
+                "INSERT INTO records (url, title, thumbnail, favicon, success, details, fetched) "
+                "VALUES (?, ?, ?, ?, 1, '[]', 0)",
+                (
+                    url,
+                    (item.get("title") or "").strip(),
+                    (item.get("thumbnail") or "").strip(),
+                    (item.get("favicon") or "").strip(),
+                ),
+            )
+            domain = _root_domain(url)
+            if domain:
+                conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
+            for name in item.get("tags") or []:
+                name = (name or "").strip()
+                if not name:
+                    continue
+                conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
+                conn.execute(
+                    "INSERT OR IGNORE INTO record_tags (record_url, tag_id) VALUES (?, ?)",
+                    (url, tag_id),
+                )
+            inserted += 1
+    return {"inserted": inserted, "skipped": skipped}
 
 
 def set_title(url: str, title: str) -> dict | None:
@@ -206,7 +291,7 @@ def set_title(url: str, title: str) -> dict | None:
         if cur.rowcount == 0:
             return None
         row = conn.execute("SELECT * FROM records WHERE url = ?", (url,)).fetchone()
-        return _row_to_record(row, conn)
+        return _row_to_record(row, _tags_for(conn, url))
 
 
 def delete_record(url: str) -> bool:
