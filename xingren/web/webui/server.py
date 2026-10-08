@@ -8,6 +8,7 @@
 
 import json
 import sys
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,12 +17,13 @@ from curl_cffi.requests import get as http_get
 
 from xingren.core.fetcher import _is_domestic, get_metadata
 from xingren.core.records import (
-    add_tag_to_record, create_tag, delete_record, delete_tag,
+    DATA_DIR, add_tag_to_record, create_tag, delete_record, delete_tag,
     get_domain_proxy, list_domains, list_records, list_tags,
     remove_tag_from_record, set_title, update_domain, upsert_record,
 )
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
+IMG_CACHE_DIR = DATA_DIR / "cache" / "img"  # 图片本地缓存（gitignored，可整目录删除刷新）
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -85,13 +87,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_img(self, body: bytes, ctype: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(body)
+
     def handle_img(self, qs: dict) -> None:
-        """服务端代抓图片（走域名代理或全局代理），避免浏览器直连外站被重置。"""
+        """服务端代抓图片（域名代理优先，结果落本地缓存），避免浏览器直连外站被重置。"""
         src = (qs.get("src") or [""])[0]
         global_proxy = (qs.get("proxy") or [""])[0].strip() or ""
         if not src.startswith(("http://", "https://")):
             self.send_error(400)
             return
+
+        digest = sha256(src.encode("utf-8")).hexdigest()[:32]
+        bin_path = IMG_CACHE_DIR / f"{digest}.bin"
+        ct_path = IMG_CACHE_DIR / f"{digest}.ct"
+
+        # 命中本地缓存：直接返回，不走网络
+        if bin_path.is_file() and ct_path.is_file():
+            self._send_img(bin_path.read_bytes(), ct_path.read_text(encoding="utf-8").strip())
+            return
+
         proxy = self._effective_proxy(src, global_proxy)
         if proxy and _is_domestic(src):
             proxy = None
@@ -102,12 +122,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = resp.content
         ctype = resp.headers.get("content-type", "application/octet-stream").split(";")[0]
-        self.send_response(resp.status_code if 100 <= (resp.status_code or 0) < 600 else 502)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "public, max-age=86400")
-        self.end_headers()
-        self.wfile.write(body)
+
+        # 只缓存成功的图片（4xx/5xx 不落盘，避免把错误页缓存住）
+        if 200 <= (resp.status_code or 0) < 300 and body:
+            IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            bin_path.write_bytes(body)
+            ct_path.write_text(ctype, encoding="utf-8")
+
+        status = resp.status_code if 100 <= (resp.status_code or 0) < 600 else 502
+        self._send_img(body, ctype, status)
 
     # ---------- 业务 ----------
 

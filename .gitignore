@@ -9,3 +9,6 @@ metadata.db-shm
 dist/
 build/
 *.egg-info/
+
+# 图片本地缓存（删除整个 cache/ 目录即可强制刷新）
+cache/

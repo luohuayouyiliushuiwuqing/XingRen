@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 # 数据文件始终放在仓库根：parents[0]=core, [1]=xingren, [2]=仓库根。
 _DATA_DIR = Path(os.environ.get("XINGREN_DATA_DIR") or Path(__file__).resolve().parents[2])
+DATA_DIR = _DATA_DIR
 DB_PATH = _DATA_DIR / "metadata.db"
 
 _SCHEMA_RECORDS = """

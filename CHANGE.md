@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-08 16:37:43 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: `/api/img` 加服务端本地磁盘缓存（3 文件）
+
+  - `server.py`：`handle_img` 先查 `cache/img/<sha256(src)[:32]>.bin` +
+    `.ct`（内容类型侧车文件），命中直接返回不走网络；未命中才经代理拉取，
+    **仅 2xx 落盘**（4xx/5xx 不缓存，避免把错误页存住）；
+    抽出 `_send_img` 统一响应头（`Cache-Control: public, max-age=86400`）
+  - `records.py`：暴露公共常量 `DATA_DIR`（原 `_DATA_DIR`），供服务端定位缓存目录
+  - `.gitignore`：加 `cache/`，整目录删除即可强制刷新
+
+  验证：首次请求 1.22s（走网络）→ 二次 0.02s（命中本地，快 61 倍）；
+  两次响应字节一致；`git check-ignore` 覆盖 `cache/img/test.bin`。
+
 ## 2026-10-08 17:15:38 +0800
 
 - **用户**: haijie yin
