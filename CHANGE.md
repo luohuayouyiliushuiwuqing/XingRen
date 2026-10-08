@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-10-08 14:52:37 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 左侧域名分类导航栏（`index.html` + `style.css` + `app.js`，+172 / -32）
+
+  - `index.html`：toolbar 加 `☰` 折叠按钮；`<main>` 内加 `<aside id="sidebar">`；
+    `<div id="board">` 包一层 `<div class="board-wrap">` 独立控制 padding 和滚动
+  - `style.css`：`<main>` 从单列 padding 改为 `display: flex` 布局；
+    sidebar 宽 220px，`.collapsed` 宽度归零 + `overflow: hidden`，过渡动画 0.2s；
+    侧边栏项（`.sidebar-item`）悬停/选中高亮，计数徽标圆角灰底；
+    卡片区移入 `.board-wrap` 独立滚动
+  - `app.js`：新增 `state.selectedDomain`（null = 全部）和 `buildSidebar()`——
+    从 `state.records` 实时提取域名分组，按计数降序排列，点击设置选中并重新渲染；
+    `render()` 根据 `selectedDomain` 分支：选中 → 平铺该域名记录，
+    全部 → 保留原有域名分组+折叠逻辑；`init()` 加 sidebarToggle 点击事件
+
+  验证：JS 语法通过；服务启动 200；HTML/JS 中 sidebar / buildSidebar 引用完整。
+
+## 2026-10-08 14:35:42 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 域名分组改为可折叠（`app.js` + `style.css`，解决大组数百上千条的展示问题）
+
+  - `app.js`：域名头加 `▸` 箭头标记，`recs.length > 20` 的组默认收起，
+    点击域名头 `classList.toggle("collapsed")` 切换展开/收起
+  - `style.css`：`.collapsed .domain-grid { display: none }` 隐藏卡片网格，
+    箭头 `rotate(90deg)` 表示展开状态，收起时边框改为虚线以视觉区分
+
+  验证：JS 语法通过；12 条 CSS 域名规则完整。
+
 ## 2026-10-08 14:23:18 +0800
 
 - **用户**: haijie yin

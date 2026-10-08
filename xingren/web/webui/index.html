@@ -8,6 +8,7 @@
 </head>
 <body>
   <header class="toolbar">
+    <button id="sidebarToggle" class="btn-icon" title="收起/展开侧边栏">☰</button>
     <div class="brand"><span class="brand-dot"></span>元数据看板</div>
     <input id="urlInput" class="input grow" placeholder="粘贴 URL 后回车添加…" spellcheck="false">
     <button id="addBtn" class="btn-primary">添加</button>
@@ -16,8 +17,11 @@
   </header>
 
   <main>
-    <div id="board" class="board"></div>
-    <div id="emptyHint" class="empty-hint" hidden>还没有书签，粘贴一个 URL 开始吧</div>
+    <aside id="sidebar" class="sidebar"></aside>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div id="emptyHint" class="empty-hint" hidden>还没有书签，粘贴一个 URL 开始吧</div>
+    </div>
   </main>
 
   <footer class="statusbar"><span id="statusText">加载中…</span></footer>

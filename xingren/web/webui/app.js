@@ -7,6 +7,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   records: [],
   filter: "",
+  selectedDomain: null,    // null = "全部"，字符串 = 选中的域名
   renameTarget: null,
   detailTarget: null,
 };
@@ -151,43 +152,87 @@ function createCard(record) {
   return card;
 }
 
-function render() {
-  const board = $("board");
-  board.innerHTML = "";
-  const visible = state.records.filter(matchesFilter);
+/* ---------- 侧边栏 ---------- */
 
-  /* 按可注册域名分组（chat.deepseek.com / platform.deepseek.com → deepseek.com） */
+function buildSidebar() {
+  const sb = $("sidebar");
+  sb.innerHTML = "";
+
+  /* "全部" 项 */
+  const all = el("div", "sidebar-item" + (state.selectedDomain === null ? " active" : ""));
+  all.innerHTML = `<span>全部</span><span class="sidebar-count">${state.records.length}</span>`;
+  all.addEventListener("click", () => { state.selectedDomain = null; render(); });
+  sb.appendChild(all);
+
+  /* 按可注册域名分组 */
   const groups = new Map();
-  for (const r of visible) {
+  for (const r of state.records) {
     const d = rootDomain(hostOf(r.url)) || "unknown";
     (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
   }
   const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
 
-  if (sorted.length <= 1) {
-    /* 0 或 1 个域名：不显示域名头，直接平铺（保持原有简洁外观） */
-    for (const r of visible) board.appendChild(createCard(r));
-  } else {
-    for (const [domain, recs] of sorted) {
-      const section = document.createElement("div");
-      section.className = "domain-group";
-      const header = document.createElement("div");
-      header.className = "domain-header";
-      header.innerHTML = `<span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
-      const grid = document.createElement("div");
-      grid.className = "domain-grid";
-      for (const r of recs) grid.appendChild(createCard(r));
-      section.append(header, grid);
-      board.appendChild(section);
-    }
+  for (const [domain, recs] of sorted) {
+    const item = el("div", "sidebar-item" + (state.selectedDomain === domain ? " active" : ""));
+    item.innerHTML = `<span>${domain}</span><span class="sidebar-count">${recs.length}</span>`;
+    item.addEventListener("click", () => { state.selectedDomain = domain; render(); });
+    sb.appendChild(item);
   }
+}
 
-  $("emptyHint").hidden = state.records.length > 0;
-  setStatus(
-    state.filter
-      ? `${visible.length} / ${state.records.length} 条匹配，${sorted.length} 个域名`
-      : `共 ${state.records.length} 条，${sorted.length} 个域名`
-  );
+/* ---------- 渲染 ---------- */
+
+function render() {
+  const board = $("board");
+  board.innerHTML = "";
+  buildSidebar();
+
+  const visible = state.records.filter(matchesFilter);
+
+  if (state.selectedDomain) {
+    /* 选中某域名 → 平铺该域名的记录 */
+    const filtered = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
+    for (const r of filtered) board.appendChild(createCard(r));
+    $("emptyHint").hidden = filtered.length > 0;
+    setStatus(`共 ${state.records.length} 条，选中 ${state.selectedDomain} (${filtered.length})`);
+  } else {
+    /* "全部" → 域名分组视图 */
+    const groups = new Map();
+    for (const r of visible) {
+      const d = rootDomain(hostOf(r.url)) || "unknown";
+      (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
+    }
+    const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+
+    if (sorted.length <= 1) {
+      for (const r of visible) board.appendChild(createCard(r));
+    } else {
+      for (const [domain, recs] of sorted) {
+        const section = document.createElement("div");
+        section.className = "domain-group";
+        const header = document.createElement("div");
+        header.className = "domain-header";
+        header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
+        const grid = document.createElement("div");
+        grid.className = "domain-grid";
+        for (const r of recs) grid.appendChild(createCard(r));
+        section.append(header, grid);
+
+        const collapsed = recs.length > 20;
+        if (collapsed) section.classList.add("collapsed");
+        header.addEventListener("click", () => section.classList.toggle("collapsed"));
+
+        board.appendChild(section);
+      }
+    }
+
+    $("emptyHint").hidden = visible.length > 0;
+    setStatus(
+      state.filter
+        ? `${visible.length} / ${state.records.length} 条匹配，${sorted.length} 个域名`
+        : `共 ${state.records.length} 条，${sorted.length} 个域名`
+    );
+  }
 }
 
 /* ---------- 抓取（添加 / 重新抓取） ---------- */
@@ -354,6 +399,10 @@ async function removeRecord(record) {
 
 function init() {
   $("proxyInput").value = "http://127.0.0.1:7892";
+
+  $("sidebarToggle").addEventListener("click", () => {
+    $("sidebar").classList.toggle("collapsed");
+  });
 
   $("addBtn").addEventListener("click", addUrl);
   $("urlInput").addEventListener("keydown", (e) => {
