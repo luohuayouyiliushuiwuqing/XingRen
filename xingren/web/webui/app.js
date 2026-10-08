@@ -8,9 +8,10 @@ const state = {
   records: [],
   filter: "",
   selectedDomain: null,    // null = "全部"，字符串 = 选中的域名
-  selectedGroup: null,     // null = 该域名下全部，字符串 = 选中的子分组
+  selectedTag: null,       // null = "全部"，字符串 = 选中的标签
   renameTarget: null,
-  groupTarget: null,       // 分组弹窗的目标记录
+  tagTarget: null,         // 标签弹窗的目标记录
+  domainTarget: null,      // 域名管理弹窗的目标域名
   detailTarget: null,
 };
 
@@ -120,11 +121,11 @@ function createCard(record) {
     e.stopPropagation();
     openRename(record);
   });
-  const groupBtn = el("button", null, "分组");
-  groupBtn.addEventListener("click", (e) => {
+  const tagBtn = el("button", null, "标签");
+  tagBtn.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openGroup(record);
+    openTag(record);
   });
   const refreshBtn = el("button", null, "重新抓取");
   refreshBtn.addEventListener("click", (e) => {
@@ -138,7 +139,7 @@ function createCard(record) {
     e.stopPropagation();
     removeRecord(record);
   });
-  actions.append(detailBtn, renameBtn, groupBtn, refreshBtn, deleteBtn);
+  actions.append(detailBtn, renameBtn, tagBtn, refreshBtn, deleteBtn);
   thumb.appendChild(actions);
 
   /* 文本区 */
@@ -154,7 +155,9 @@ function createCard(record) {
   const domainRow = el("div", "domain");
   domainRow.appendChild(el("span", "dot " + (record.success ? "ok" : "fail")));
   domainRow.appendChild(el("span", null, host));
-  if (record.group_name) domainRow.appendChild(el("span", "group-badge", record.group_name));
+  if (record.tags && record.tags.length) {
+    for (const t of record.tags) domainRow.appendChild(el("span", "tag-badge", t.name));
+  }
   body.append(title, domainRow);
 
   card.append(thumb, body);
@@ -167,47 +170,50 @@ function buildSidebar() {
   const sb = $("sidebar");
   sb.innerHTML = "";
 
-  /* "全部" 项 */
-  const allActive = state.selectedDomain === null;
+  const allActive = state.selectedDomain === null && state.selectedTag === null;
   const all = el("div", "sidebar-item" + (allActive ? " active" : ""));
   all.innerHTML = `<span>全部</span><span class="sidebar-count">${state.records.length}</span>`;
-  all.addEventListener("click", () => { state.selectedDomain = null; state.selectedGroup = null; render(); });
+  all.addEventListener("click", () => { state.selectedDomain = null; state.selectedTag = null; render(); });
   sb.appendChild(all);
 
-  /* 按域名 → 子分组两级分组 */
-  const domainMap = new Map();  // domain → Map(group → [records])
+  /* ── 域名 ── */
+  sb.appendChild(el("div", "sidebar-label", "域名"));
+  const domainCounts = new Map();
   for (const r of state.records) {
     const d = rootDomain(hostOf(r.url)) || "unknown";
-    const g = r.group_name || "未分组";
-    if (!domainMap.has(d)) domainMap.set(d, new Map());
-    const gMap = domainMap.get(d);
-    if (!gMap.has(g)) gMap.set(g, []);
-    gMap.get(g).push(r);
+    domainCounts.set(d, (domainCounts.get(d) || 0) + 1);
   }
-  const sortedDomains = [...domainMap.entries()].sort((a, b) => {
-    const sum = (m) => [...m.values()].reduce((s, arr) => s + arr.length, 0);
-    return sum(b[1]) - sum(a[1]);
-  });
+  const sortedDomains = [...domainCounts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [domain, count] of sortedDomains) {
+    const active = state.selectedDomain === domain;
+    const item = el("div", "sidebar-item" + (active ? " active" : ""));
+    item.innerHTML = `<span>${domain}</span><span class="sidebar-count">${count}</span>`;
+    item.addEventListener("click", () => { state.selectedDomain = active ? null : domain; render(); });
+    sb.appendChild(item);
+  }
 
-  for (const [domain, gMap] of sortedDomains) {
-    const domainTotal = [...gMap.values()].reduce((s, arr) => s + arr.length, 0);
-    const domainActive = state.selectedDomain === domain && state.selectedGroup === null;
-    const domainItem = el("div", "sidebar-item sidebar-domain" + (domainActive ? " active" : ""));
-    domainItem.innerHTML = `<span>${domain}</span><span class="sidebar-count">${domainTotal}</span>`;
-    domainItem.addEventListener("click", () => { state.selectedDomain = domain; state.selectedGroup = null; render(); });
-    sb.appendChild(domainItem);
-
-    /* 子分组（仅当选中该域名时展开显示） */
-    if (state.selectedDomain === domain) {
-      const sortedGroups = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
-      for (const [group, recs] of sortedGroups) {
-        const groupActive = state.selectedGroup === group;
-        const sub = el("div", "sidebar-item sidebar-sub" + (groupActive ? " active" : ""));
-        sub.innerHTML = `<span>${group}</span><span class="sidebar-count">${recs.length}</span>`;
-        sub.addEventListener("click", () => { state.selectedGroup = group; render(); });
-        sb.appendChild(sub);
-      }
-    }
+  /* ── 标签 ── */
+  sb.appendChild(el("div", "sidebar-label", "标签"));
+  const tagCounts = new Map();
+  let untagged = 0;
+  for (const r of state.records) {
+    if (!r.tags || !r.tags.length) { untagged++; continue; }
+    for (const t of r.tags) tagCounts.set(t.name, (tagCounts.get(t.name) || 0) + 1);
+  }
+  const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [name, count] of sortedTags) {
+    const active = state.selectedTag === name;
+    const item = el("div", "sidebar-item" + (active ? " active" : ""));
+    item.innerHTML = `<span>${name}</span><span class="sidebar-count">${count}</span>`;
+    item.addEventListener("click", () => { state.selectedTag = active ? null : name; render(); });
+    sb.appendChild(item);
+  }
+  if (untagged) {
+    const active = state.selectedTag === "__untagged__";
+    const item = el("div", "sidebar-item" + (active ? " active" : ""));
+    item.innerHTML = `<span>未标签</span><span class="sidebar-count">${untagged}</span>`;
+    item.addEventListener("click", () => { state.selectedTag = active ? null : "__untagged__"; render(); });
+    sb.appendChild(item);
   }
 }
 
@@ -218,34 +224,38 @@ function render() {
   board.innerHTML = "";
   buildSidebar();
 
-  const visible = state.records.filter(matchesFilter);
+  let visible = state.records.filter(matchesFilter);
 
-  if (state.selectedDomain && state.selectedGroup) {
-    /* 选中子分组 → 平铺 */
-    const filtered = visible.filter(r =>
-      rootDomain(hostOf(r.url)) === state.selectedDomain &&
-      (r.group_name || "未分组") === state.selectedGroup
-    );
-    for (const r of filtered) board.appendChild(createCard(r));
-    $("emptyHint").hidden = filtered.length > 0;
-    setStatus(`共 ${state.records.length} 条，${state.selectedDomain} / ${state.selectedGroup} (${filtered.length})`);
-
-  } else if (state.selectedDomain) {
-    /* 选中域名 → 按子分组分组 */
-    const domainRecs = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
-    const gMap = new Map();
-    for (const r of domainRecs) {
-      const g = r.group_name || "未分组";
-      (gMap.get(g) ?? gMap.set(g, []).get(g)).push(r);
+  /* 按域名过滤 */
+  if (state.selectedDomain) {
+    visible = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
+  }
+  /* 按标签过滤 */
+  if (state.selectedTag) {
+    if (state.selectedTag === "__untagged__") {
+      visible = visible.filter(r => !r.tags || !r.tags.length);
+    } else {
+      visible = visible.filter(r => r.tags && r.tags.some(t => t.name === state.selectedTag));
     }
-    const sorted = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+  }
 
-    for (const [group, recs] of sorted) {
+  /* 按域名分组显示 */
+  const domainMap = new Map();
+  for (const r of visible) {
+    const d = rootDomain(hostOf(r.url)) || "unknown";
+    (domainMap.get(d) ?? domainMap.set(d, []).get(d)).push(r);
+  }
+  const sortedDomains = [...domainMap.entries()].sort((a, b) => b[1].length - a[1].length);
+
+  if (sortedDomains.length <= 1) {
+    for (const r of visible) board.appendChild(createCard(r));
+  } else {
+    for (const [domain, recs] of sortedDomains) {
       const section = document.createElement("div");
       section.className = "domain-group";
       const header = document.createElement("div");
       header.className = "domain-header";
-      header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${group}</span><span class="domain-count">${recs.length}</span>`;
+      header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
       const grid = document.createElement("div");
       grid.className = "domain-grid";
       for (const r of recs) grid.appendChild(createCard(r));
@@ -254,73 +264,15 @@ function render() {
       header.addEventListener("click", () => section.classList.toggle("collapsed"));
       board.appendChild(section);
     }
-    $("emptyHint").hidden = domainRecs.length > 0;
-    setStatus(`共 ${state.records.length} 条，${state.selectedDomain} (${domainRecs.length})`);
-
-  } else {
-    /* 全部 → 域名 → 子分组两级分组 */
-    const domainMap = new Map();
-    for (const r of visible) {
-      const d = rootDomain(hostOf(r.url)) || "unknown";
-      if (!domainMap.has(d)) domainMap.set(d, new Map());
-      const g = r.group_name || "未分组";
-      const gMap = domainMap.get(d);
-      if (!gMap.has(g)) gMap.set(g, []);
-      gMap.get(g).push(r);
-    }
-    const sortedDomains = [...domainMap.entries()].sort((a, b) => {
-      const sum = (m) => [...m.values()].reduce((s, arr) => s + arr.length, 0);
-      return sum(b[1]) - sum(a[1]);
-    });
-
-    if (sortedDomains.length <= 1 && sortedDomains[0] && [...sortedDomains[0][1]].length <= 1) {
-      /* 单域名单子分组：直接平铺 */
-      for (const r of visible) board.appendChild(createCard(r));
-    } else {
-      for (const [domain, gMap] of sortedDomains) {
-        const domainTotal = [...gMap.values()].reduce((s, arr) => s + arr.length, 0);
-        const section = document.createElement("div");
-        section.className = "domain-group";
-        const header = document.createElement("div");
-        header.className = "domain-header";
-        header.innerHTML = `<span class="domain-toggle">▸</span><span class="domain-name">${domain}</span><span class="domain-count">${domainTotal}</span>`;
-
-        const sortedGroups = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
-        const content = document.createElement("div");
-        content.className = "domain-content";
-
-        if (sortedGroups.length === 1 && sortedGroups[0][0] === "未分组") {
-          /* 单子分组（未分组）：不显示子分组头，直接平铺 */
-          const grid = document.createElement("div");
-          grid.className = "domain-grid";
-          for (const r of sortedGroups[0][1]) grid.appendChild(createCard(r));
-          content.appendChild(grid);
-        } else {
-          for (const [group, recs] of sortedGroups) {
-            const subHeader = document.createElement("div");
-            subHeader.className = "sub-group-header";
-            subHeader.textContent = `${group} (${recs.length})`;
-            const grid = document.createElement("div");
-            grid.className = "domain-grid";
-            for (const r of recs) grid.appendChild(createCard(r));
-            content.append(subHeader, grid);
-          }
-        }
-
-        section.append(header, content);
-        if (domainTotal > 20) section.classList.add("collapsed");
-        header.addEventListener("click", () => section.classList.toggle("collapsed"));
-        board.appendChild(section);
-      }
-    }
-
-    $("emptyHint").hidden = visible.length > 0;
-    setStatus(
-      state.filter
-        ? `${visible.length} / ${state.records.length} 条匹配，${sortedDomains.length} 个域名`
-        : `共 ${state.records.length} 条，${sortedDomains.length} 个域名`
-    );
   }
+
+  $("emptyHint").hidden = visible.length > 0;
+  const parts = [`共 ${state.records.length} 条`];
+  if (state.selectedDomain) parts.push(state.selectedDomain);
+  if (state.selectedTag && state.selectedTag !== "__untagged__") parts.push(state.selectedTag);
+  if (state.selectedTag === "__untagged__") parts.push("未标签");
+  parts.push(`${visible.length} 条显示`);
+  setStatus(parts.join("，"));
 }
 
 /* ---------- 抓取（添加 / 重新抓取） ---------- */
@@ -405,40 +357,92 @@ async function submitRename() {
   }
 }
 
-/* ---------- 分组 ---------- */
+/* ---------- 标签管理 ---------- */
 
-function openGroup(record) {
-  state.groupTarget = record;
-  $("groupInput").value = record.group_name || "";
-  $("groupMask").hidden = false;
-  $("groupInput").focus();
+async function openTag(record) {
+  state.tagTarget = record;
+  await renderTagModal();
+  $("tagMask").hidden = false;
 }
 
-async function submitGroup() {
-  const record = state.groupTarget;
-  if (!record) return;
-  const group_name = $("groupInput").value.trim();
-  $("groupMask").hidden = true;
-  if (group_name === (record.group_name || "")) return;
+async function renderTagModal() {
+  const record = state.tagTarget;
+  const box = $("tagList");
+  box.innerHTML = "";
   try {
-    const resp = await fetch("/api/record", {
+    const resp = await fetch("/api/tags");
+    const data = await resp.json();
+    const tags = data.tags || [];
+    const recordTagIds = new Set((record.tags || []).map(t => t.id));
+    for (const tag of tags) {
+      const item = el("div", "tag-item" + (recordTagIds.has(tag.id) ? " active" : ""));
+      item.innerHTML = `<span>${tag.name}</span><span class="tag-toggle">${recordTagIds.has(tag.id) ? "✓" : "+"}</span>`;
+      item.addEventListener("click", async () => {
+        if (recordTagIds.has(tag.id)) {
+          await fetch(`/api/record/tag?url=${encodeURIComponent(record.url)}&tag_id=${tag.id}`, { method: "DELETE" });
+        } else {
+          await fetch("/api/record/tag", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: record.url, tag_id: tag.id }),
+          });
+        }
+        // 刷新记录数据
+        const recResp = await fetch("/api/records");
+        const recData = await recResp.json();
+        state.records = recData.records || [];
+        render();
+        renderTagModal();
+      });
+      box.appendChild(item);
+    }
+  } catch { box.textContent = "加载标签失败"; }
+}
+
+async function addNewTag() {
+  const name = $("tagInput").value.trim();
+  if (!name) return;
+  $("tagInput").value = "";
+  await fetch("/api/tag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  renderTagModal();
+}
+
+/* ---------- 域名管理 ---------- */
+
+function openDomain(domainName) {
+  state.domainTarget = domainName;
+  $("domainTitle").textContent = `域名管理：${domainName}`;
+  // 从 API 获取域名信息
+  fetch("/api/domains").then(r => r.json()).then(data => {
+    const domain = (data.domains || []).find(d => d.name === domainName);
+    $("domainNameInput").value = domain?.display_name || "";
+    $("domainProxyInput").value = domain?.proxy || "";
+  });
+  $("domainMask").hidden = false;
+}
+
+async function saveDomain() {
+  const name = state.domainTarget;
+  if (!name) return;
+  const display_name = $("domainNameInput").value.trim();
+  const proxy = $("domainProxyInput").value.trim();
+  $("domainMask").hidden = true;
+  try {
+    await fetch("/api/domain", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: record.url, group_name }),
+      body: JSON.stringify({ name, display_name, proxy }),
     });
-    const data = await resp.json();
-    if (data.ok) {
-      record.group_name = data.record.group_name;
-      render();
-      setStatus(`已${group_name ? "归入「" + group_name + "」" : "取消分组"}`);
-    } else {
-      setStatus("分组失败：" + data.error, "err");
-    }
+    render();
+    setStatus(`已更新域名 ${name}`);
   } catch (e) {
-    setStatus("分组失败：" + e.message, "err");
-  } finally {
-    state.groupTarget = null;
+    setStatus("域名更新失败：" + e.message, "err");
   }
+  state.domainTarget = null;
 }
 
 /* ---------- 详情弹层（展示 .space-y-2 提取的标签值字段） ---------- */
@@ -610,17 +614,25 @@ function init() {
     if (e.target === $("modalMask")) $("modalCancel").click();
   });
 
-  $("groupOk").addEventListener("click", submitGroup);
-  $("groupCancel").addEventListener("click", () => {
-    $("groupMask").hidden = true;
-    state.groupTarget = null;
+  $("tagAddBtn").addEventListener("click", addNewTag);
+  $("tagInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addNewTag();
   });
-  $("groupInput").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submitGroup();
-    if (e.key === "Escape") $("groupCancel").click();
+  $("tagClose").addEventListener("click", () => {
+    $("tagMask").hidden = true;
+    state.tagTarget = null;
   });
-  $("groupMask").addEventListener("click", (e) => {
-    if (e.target === $("groupMask")) $("groupCancel").click();
+  $("tagMask").addEventListener("click", (e) => {
+    if (e.target === $("tagMask")) $("tagClose").click();
+  });
+
+  $("domainSave").addEventListener("click", saveDomain);
+  $("domainCancel").addEventListener("click", () => {
+    $("domainMask").hidden = true;
+    state.domainTarget = null;
+  });
+  $("domainMask").addEventListener("click", (e) => {
+    if (e.target === $("domainMask")) $("domainCancel").click();
   });
 
   $("detailClose").addEventListener("click", closeDetail);

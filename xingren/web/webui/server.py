@@ -15,7 +15,11 @@ from urllib.parse import parse_qs, urlparse
 from curl_cffi.requests import get as http_get
 
 from xingren.core.fetcher import _is_domestic, get_metadata
-from xingren.core.records import delete_record, list_records, set_group_name, set_title, upsert_record
+from xingren.core.records import (
+    add_tag_to_record, create_tag, delete_record, delete_tag,
+    get_domain_proxy, list_domains, list_records, list_tags,
+    remove_tag_from_record, set_title, update_domain, upsert_record,
+)
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 
@@ -47,15 +51,29 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _effective_proxy(self, url: str, global_proxy: str) -> str | None:
+        """按域名代理优先于全局代理。"""
+        domain_proxy = get_domain_proxy(url)
+        return domain_proxy or global_proxy or None
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/records":
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+
+        if path == "/api/records":
             self._send_json({"records": list_records()})
             return
-        if parsed.path == "/api/img":
-            self.handle_img(parse_qs(parsed.query))
+        if path == "/api/domains":
+            self._send_json({"domains": list_domains()})
             return
-        name = STATIC_FILES.get(parsed.path)
+        if path == "/api/tags":
+            self._send_json({"tags": list_tags()})
+            return
+        if path == "/api/img":
+            self.handle_img(qs)
+            return
+        name = STATIC_FILES.get(path)
         if name is None:
             self.send_error(404)
             return
@@ -68,12 +86,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_img(self, qs: dict) -> None:
-        """服务端代抓图片（走本地代理），避免浏览器直连外站被重置。"""
+        """服务端代抓图片（走域名代理或全局代理），避免浏览器直连外站被重置。"""
         src = (qs.get("src") or [""])[0]
-        proxy = (qs.get("proxy") or [""])[0].strip() or None
+        global_proxy = (qs.get("proxy") or [""])[0].strip() or ""
         if not src.startswith(("http://", "https://")):
             self.send_error(400)
             return
+        proxy = self._effective_proxy(src, global_proxy)
         if proxy and _is_domestic(src):
             proxy = None
         try:
@@ -93,49 +112,105 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- 业务 ----------
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/fetch":
-            self.send_error(404)
-            return
+        path = urlparse(self.path).path
         data = self._read_json()
-        url = (data.get("url") or "").strip()
-        proxy = (data.get("proxy") or "").strip() or None
-        if not url.startswith(("http://", "https://")):
-            self._send_json({"ok": False, "error": "网址必须以 http:// 或 https:// 开头"}, 400)
+
+        if path == "/api/fetch":
+            url = (data.get("url") or "").strip()
+            global_proxy = (data.get("proxy") or "").strip() or ""
+            if not url.startswith(("http://", "https://")):
+                self._send_json({"ok": False, "error": "网址必须以 http:// 或 https:// 开头"}, 400)
+                return
+            proxy = self._effective_proxy(url, global_proxy)
+            meta = get_metadata(url, proxy=proxy)
+            merged = upsert_record(meta)
+            self._send_json({"ok": True, "record": merged})
             return
 
-        meta = get_metadata(url, proxy=proxy)
-        merged = upsert_record(meta)
-        self._send_json({"ok": True, "record": merged})
+        if path == "/api/tag":
+            name = (data.get("name") or "").strip()
+            if not name:
+                self._send_json({"ok": False, "error": "缺少标签名"}, 400)
+                return
+            tag = create_tag(name)
+            self._send_json({"ok": True, "tag": tag})
+            return
+
+        if path == "/api/record/tag":
+            url = (data.get("url") or "").strip()
+            tag_id = data.get("tag_id")
+            if not url or not tag_id:
+                self._send_json({"ok": False, "error": "缺少 url 或 tag_id"}, 400)
+                return
+            add_tag_to_record(url, tag_id)
+            self._send_json({"ok": True})
+            return
+
+        self.send_error(404)
 
     def do_PATCH(self) -> None:
-        if urlparse(self.path).path != "/api/record":
-            self.send_error(404)
-            return
+        path = urlparse(self.path).path
         data = self._read_json()
-        url = (data.get("url") or "").strip()
-        if "title" not in data and "group_name" not in data:
-            self._send_json({"ok": False, "error": "缺少 title 或 group_name"}, 400)
-            return
-        record = None
-        if "title" in data:
+
+        if path == "/api/record":
+            url = (data.get("url") or "").strip()
+            if "title" not in data:
+                self._send_json({"ok": False, "error": "缺少 title"}, 400)
+                return
             record = set_title(url, data.get("title") or "")
-        if "group_name" in data:
-            record = set_group_name(url, data.get("group_name") or "")
-        if record is None:
-            self._send_json({"ok": False, "error": "记录不存在"}, 404)
+            if record is None:
+                self._send_json({"ok": False, "error": "记录不存在"}, 404)
+                return
+            self._send_json({"ok": True, "record": record})
             return
-        self._send_json({"ok": True, "record": record})
+
+        if path == "/api/domain":
+            name = (data.get("name") or "").strip()
+            if not name:
+                self._send_json({"ok": False, "error": "缺少域名"}, 400)
+                return
+            domain = update_domain(
+                name,
+                display_name=data.get("display_name"),
+                proxy=data.get("proxy"),
+            )
+            self._send_json({"ok": True, "domain": domain})
+            return
+
+        self.send_error(404)
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path != "/api/record":
-            self.send_error(404)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+
+        if path == "/api/record":
+            url = (qs.get("url") or [""])[0]
+            if not delete_record(url):
+                self._send_json({"ok": False, "error": "记录不存在"}, 404)
+                return
+            self._send_json({"ok": True})
             return
-        url = (parse_qs(parsed.query).get("url") or [""])[0]
-        if not delete_record(url):
-            self._send_json({"ok": False, "error": "记录不存在"}, 404)
+
+        if path == "/api/tag":
+            tag_id = (qs.get("id") or [""])[0]
+            if not tag_id or not delete_tag(int(tag_id)):
+                self._send_json({"ok": False, "error": "标签不存在"}, 404)
+                return
+            self._send_json({"ok": True})
             return
-        self._send_json({"ok": True})
+
+        if path == "/api/record/tag":
+            url = (qs.get("url") or [""])[0]
+            tag_id = (qs.get("tag_id") or [""])[0]
+            if not url or not tag_id:
+                self._send_json({"ok": False, "error": "缺少 url 或 tag_id"}, 400)
+                return
+            remove_tag_from_record(url, int(tag_id))
+            self._send_json({"ok": True})
+            return
+
+        self.send_error(404)
 
     def log_message(self, fmt: str, *args) -> None:
         print("[webui]", self.address_string(), fmt % args, flush=True)
@@ -153,7 +228,6 @@ def main() -> None:
     host = _opt("--host", "0.0.0.0")
     port = int(_opt("--port", "4000"))
     server = ThreadingHTTPServer((host, port), Handler)
-    # flush：重定向到文件时 stdout 是块缓冲，不加则 nohup/tail -f 看不到启动横幅
     print(f"Web 看板已启动：http://{host}:{port}/", flush=True)
     if host == "0.0.0.0":
         print(f"  本机访问：http://127.0.0.1:{port}/", flush=True)

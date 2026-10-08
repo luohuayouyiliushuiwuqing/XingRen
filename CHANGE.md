@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-10-08 17:05:22 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 数据库重构——域名独立管理 + 多对多标签（5 文件，+543 / -255）
+
+  - `records.py`（重写）：新建 `domains` / `tags` / `record_tags` 三张表；
+    迁移 `group_name` → tags（一次性，完成后删除 `group_name` 列）；
+    自动从现有记录提取域名填充 `domains` 表；
+    新增 domains/tags/record_tags 完整 CRUD 函数；
+    `_row_to_record` 返回 `domain`（从 URL 提取）和 `tags` 列表
+  - `server.py`（重写）：新增 `GET /api/domains`、`GET /api/tags`、
+    `POST /api/tag`、`DELETE /api/tag`、`POST /api/record/tag`、
+    `DELETE /api/record/tag`、`PATCH /api/domain` 端点；
+    fetch/img 端点按域名查代理（`get_domain_proxy` 优先于全局代理）；
+    移除 `group_name` 相关逻辑
+  - `app.js`（重写）：state 改为 `selectedDomain` + `selectedTag` 双维度过滤；
+    `buildSidebar` 改为域名+标签两段列表（点击切换过滤，再点取消）；
+    卡片操作条「分组」→「标签」；`openTag` 弹窗显示所有标签，✓/+ 切换关联；
+    新增 `openDomain` 域名管理弹窗（编辑别名和代理）；
+    `render()` 按域名+标签组合过滤，按域名分组显示
+  - `index.html`：替换分组弹窗为标签弹窗（标签列表+新建输入）+ 域名管理弹窗
+  - `style.css`：`.sidebar-label`（域名/标签分段标题）、`.tag-item`/`.tag-toggle`
+    （标签选择项）、`.tag-badge`（卡片标签徽标）、`.domain-form`（域名表单）
+
+  验证：JS 语法 / Python 编译 / 数据库迁移（group_name 删除，domains 11 条自动填充）/
+  服务启动 200 / API 全部 200 / 前端 25 处新功能引用。
+
 ## 2026-10-08 16:12:38 +0800
 
 - **用户**: haijie yin
