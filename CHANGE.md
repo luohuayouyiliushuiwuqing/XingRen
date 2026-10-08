@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-10-08 17:33:56 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: statusbar 悬浮于页面底部（仅 style.css）
+
+  - `.statusbar` 由普通 flex 子项改为 `position: fixed; left:0; right:0; bottom:0; z-index:10`，
+    脱离文档流盖在内容上，加 `box-shadow: 0 -2px 8px` 与内容分隔
+  - 脱离流后占的 39px 需补偿，否则最后一行被遮：
+    `.board-wrap` `padding-bottom` 24→63px、`.sidebar` 补 `padding-bottom: 55px`
+
+  **未采用 `position: sticky; bottom:0`**：`body` 是 `min-height:100vh` 的 flex 列、
+  `main` 是 `flex:1 + overflow:hidden`，状态栏本就在视口底部且不随滚动移动，
+  sticky 在此布局下无任何可见效果；fixed 才真正「悬浮」并把这 39px 还给看板。
+
+  验证：statusbar 规则与两处让位 padding 均已下发（静态文件即时生效，刷新即可）。
+
 ## 2026-10-08 17:27:54 +0800
 
 - **用户**: haijie yin
