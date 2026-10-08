@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-08 14:23:18 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 域名分组改为按可注册域名聚合（`app.js`，2 处改动）
+
+  - 新增 `rootDomain(host)` 函数：取主机名最后 2 段作为分组键，
+    对 `.com.cn` / `.net.cn` / `.org.cn` 等多段后缀取最后 3 段
+  - `render()` 分组键从 `hostOf(r.url)` 改为 `rootDomain(hostOf(r.url))`：
+    `chat.deepseek.com` / `platform.deepseek.com` / `fe-static.deepseek.com` /
+    `cdn.deepseek.com` → 同归 `deepseek.com` 组（4 条）
+
+  验证：13 个真实 URL 分组测试 + 5 个多段后缀边界用例全部通过。
+
 ## 2026-10-08 13:56:50 +0800
 
 - **用户**: haijie yin

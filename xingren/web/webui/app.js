@@ -25,6 +25,16 @@ function hostOf(url) {
   }
 }
 
+/* 提取可注册域名：chat.deepseek.com → deepseek.com，www.example.com.cn → example.com.cn */
+function rootDomain(host) {
+  const parts = host.split(".");
+  if (parts.length <= 2) return host;
+  const last2 = parts.slice(-2).join(".");
+  /* 多段后缀：.com.cn / .net.cn / .org.cn / .co.uk 等 → 取最后 3 段 */
+  if (/^(com|net|org|gov|edu)\.\w{2}$/.test(last2)) return parts.slice(-3).join(".");
+  return last2;
+}
+
 /* ---------- 数据加载与渲染 ---------- */
 
 async function loadRecords() {
@@ -146,10 +156,10 @@ function render() {
   board.innerHTML = "";
   const visible = state.records.filter(matchesFilter);
 
-  /* 按域名分组，组按记录数降序 */
+  /* 按可注册域名分组（chat.deepseek.com / platform.deepseek.com → deepseek.com） */
   const groups = new Map();
   for (const r of visible) {
-    const d = hostOf(r.url) || "unknown";
+    const d = rootDomain(hostOf(r.url)) || "unknown";
     (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
   }
   const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
