@@ -9,6 +9,7 @@ const state = {
   filter: "",
   selectedDomain: null,    // null = "全部"，字符串 = 选中的域名
   selectedTag: null,       // null = "全部"，字符串 = 选中的标签
+  globalProxy: "http://127.0.0.1:7897",  // 全局代理，在「代理」面板里编辑
   renameTarget: null,
   tagTarget: null,         // 标签弹窗的目标记录
   domainTarget: null,      // 域名管理弹窗的目标域名
@@ -75,7 +76,7 @@ function createCard(record) {
   const card = el("div", "card");
   const host = hostOf(record.url);
   const pending = !record.success && !record.title;
-  const proxy = $("proxyInput").value.trim();
+  const proxy = state.globalProxy;
   const imgSrc = (u) =>
     "/api/img?src=" + encodeURIComponent(u) +
     (proxy ? "&proxy=" + encodeURIComponent(proxy) : "");
@@ -267,7 +268,7 @@ function render() {
 /* ---------- 抓取（添加 / 重新抓取） ---------- */
 
 async function fetchRecord(url) {
-  const proxy = $("proxyInput").value.trim();
+  const proxy = state.globalProxy;
   $("addBtn").disabled = true;
   setStatus(`正在抓取 ${url} …（三级降级，可能需要数秒到一两分钟）`, "busy");
   try {
@@ -409,7 +410,8 @@ function openDomain(domainName) {
   fetch("/api/domains").then(r => r.json()).then(data => {
     const domain = (data.domains || []).find(d => d.name === domainName);
     $("domainNameInput").value = domain?.display_name || "";
-    $("domainProxyInput").value = domain?.proxy || "";
+    const np = domain?.need_proxy;   // null=跟随全局, true/false
+    $("domainNeedSelect").value = np === null || np === undefined ? "" : (np ? "1" : "0");
   });
   $("domainMask").hidden = false;
 }
@@ -418,20 +420,92 @@ async function saveDomain() {
   const name = state.domainTarget;
   if (!name) return;
   const display_name = $("domainNameInput").value.trim();
-  const proxy = $("domainProxyInput").value.trim();
+  const sel = $("domainNeedSelect").value;
+  const need_proxy = sel === "" ? null : sel === "1";   // "" → null = 无规则
   $("domainMask").hidden = true;
   try {
     await fetch("/api/domain", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, display_name, proxy }),
+      body: JSON.stringify({ name, display_name, need_proxy }),
     });
     render();
-    setStatus(`已更新域名 ${name}`);
+    const label = need_proxy === null ? "跟随全局" : (need_proxy ? "用代理" : "直连");
+    setStatus(`已更新域名 ${name}（${label}）`);
   } catch (e) {
     setStatus("域名更新失败：" + e.message, "err");
   }
   state.domainTarget = null;
+}
+
+/* ---------- 代理映射面板 ---------- */
+
+async function openProxyPanel() {
+  $("globalProxyInput").value = state.globalProxy;
+  await renderProxyPanel();
+  $("proxyMask").hidden = false;
+}
+
+async function renderProxyPanel() {
+  /* URL 模式规则 */
+  const ruleBox = $("ruleList");
+  ruleBox.innerHTML = "";
+  try {
+    const data = await (await fetch("/api/proxy-rules")).json();
+    for (const rule of data.rules || []) {
+      const row = el("div", "rule-row");
+      row.appendChild(el("span", "rule-pattern", rule.pattern));
+      row.appendChild(el("span", "rule-proxy" + (rule.need_proxy ? "" : " direct"),
+        rule.need_proxy ? "用代理" : "直连"));
+      const del = el("button", "rule-del", "删除");
+      del.addEventListener("click", async () => {
+        await fetch(`/api/proxy-rule?id=${rule.id}`, { method: "DELETE" });
+        renderProxyPanel();
+      });
+      row.appendChild(del);
+      ruleBox.appendChild(row);
+    }
+    if (!(data.rules || []).length) ruleBox.appendChild(el("div", "rule-empty", "暂无规则"));
+  } catch { ruleBox.textContent = "加载失败"; }
+
+  /* 域名规则 */
+  const domBox = $("domainProxyList");
+  domBox.innerHTML = "";
+  try {
+    const data = await (await fetch("/api/domains")).json();
+    const withRule = (data.domains || []).filter(d => d.need_proxy !== null);
+    for (const d of withRule) {
+      const row = el("div", "rule-row");
+      const nameBtn = el("span", "rule-pattern link", d.name);
+      nameBtn.addEventListener("click", () => { $("proxyMask").hidden = true; openDomain(d.name); });
+      row.appendChild(nameBtn);
+      row.appendChild(el("span", "rule-proxy" + (d.need_proxy ? "" : " direct"),
+        d.need_proxy ? "用代理" : "直连"));
+      row.appendChild(el("span", "rule-note", "点域名可编辑"));
+      domBox.appendChild(row);
+    }
+    if (!withRule.length) domBox.appendChild(el("div", "rule-empty", "暂无域名级规则（都在跟随全局）"));
+  } catch { domBox.textContent = "加载失败"; }
+}
+
+async function saveGlobalProxy() {
+  const val = $("globalProxyInput").value.trim();
+  state.globalProxy = val;
+  setStatus(val ? `全局代理已设为 ${val}` : "已清除全局代理");
+}
+
+async function addRule() {
+  const pattern = $("rulePatternInput").value.trim();
+  const need_proxy = $("ruleNeedSelect").value === "1";
+  if (!pattern) { setStatus("请填写匹配模式", "err"); return; }
+  $("rulePatternInput").value = "";
+  await fetch("/api/proxy-rule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pattern, need_proxy }),
+  });
+  renderProxyPanel();
+  setStatus(`已添加规则：${pattern} → ${need_proxy ? "用代理" : "直连"}`);
 }
 
 /* ---------- 详情弹层（展示 .space-y-2 提取的标签值字段） ---------- */
@@ -580,7 +654,7 @@ async function importFromFile(file) {
   const urls = [...new Set(parseUrls(text, file.name))];  // 去重
   if (!urls.length) { setStatus("文件中未找到 http 开头的 URL", "err"); return; }
 
-  const proxy = $("proxyInput").value.trim();
+  const proxy = state.globalProxy;
   const existing = new Set(state.records.map(r => r.url));
   const toFetch = urls.filter(u => !existing.has(u));
   const skipped = urls.length - toFetch.length;
@@ -620,8 +694,6 @@ async function importFromFile(file) {
 /* ---------- 事件绑定 ---------- */
 
 function init() {
-  $("proxyInput").value = "http://127.0.0.1:7897";
-
   $("sidebarToggle").addEventListener("click", () => {
     $("sidebar").classList.toggle("collapsed");
   });
@@ -679,6 +751,15 @@ function init() {
   $("domainMask").addEventListener("click", (e) => {
     if (e.target === $("domainMask")) $("domainCancel").click();
   });
+
+  $("proxyPanelBtn").addEventListener("click", openProxyPanel);
+  $("proxyClose").addEventListener("click", () => { $("proxyMask").hidden = true; });
+  $("proxyMask").addEventListener("click", (e) => {
+    if (e.target === $("proxyMask")) $("proxyMask").hidden = true;
+  });
+  $("globalProxySave").addEventListener("click", saveGlobalProxy);
+  $("ruleAddBtn").addEventListener("click", addRule);
+  $("rulePatternInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
 
   $("detailClose").addEventListener("click", closeDetail);
   $("detailRefresh").addEventListener("click", async () => {

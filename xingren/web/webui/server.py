@@ -17,9 +17,10 @@ from curl_cffi.requests import get as http_get
 
 from xingren.core.fetcher import _is_domestic, get_metadata
 from xingren.core.records import (
-    DATA_DIR, add_tag_to_record, create_tag, delete_record, delete_tag,
-    get_domain_proxy, list_domains, list_records, list_tags,
-    remove_tag_from_record, set_title, update_domain, upsert_record,
+    DATA_DIR, add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
+    get_domain_need_proxy, list_domains, list_proxy_rules, list_records, list_tags,
+    match_proxy_rule, remove_tag_from_record, set_title, update_domain,
+    upsert_proxy_rule, upsert_record,
 )
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
@@ -54,9 +55,18 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _effective_proxy(self, url: str, global_proxy: str) -> str | None:
-        """按域名代理优先于全局代理。"""
-        domain_proxy = get_domain_proxy(url)
-        return domain_proxy or global_proxy or None
+        """代理优先级：URL 模式规则 > 域名规则 > 全局代理默认值。
+
+        映射只表达「要不要走代理」，实际地址统一取 global_proxy。
+        规则命中即为强制值——need_proxy=0 表示强制直连，不再向下兜底。
+        """
+        hit, need = match_proxy_rule(url)
+        if hit:
+            return (global_proxy or None) if need else None
+        domain_need = get_domain_need_proxy(url)
+        if domain_need is not None:
+            return (global_proxy or None) if domain_need else None
+        return global_proxy or None
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -71,6 +81,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/tags":
             self._send_json({"tags": list_tags()})
+            return
+        if path == "/api/proxy-rules":
+            self._send_json({"rules": list_proxy_rules()})
             return
         if path == "/api/img":
             self.handle_img(qs)
@@ -169,6 +182,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        if path == "/api/proxy-rule":
+            pattern = (data.get("pattern") or "").strip()
+            if not pattern:
+                self._send_json({"ok": False, "error": "缺少匹配模式"}, 400)
+                return
+            rule = upsert_proxy_rule(pattern, bool(data.get("need_proxy", True)))
+            self._send_json({"ok": True, "rule": rule})
+            return
+
         self.send_error(404)
 
     def do_PATCH(self) -> None:
@@ -192,11 +214,13 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send_json({"ok": False, "error": "缺少域名"}, 400)
                 return
-            domain = update_domain(
-                name,
-                display_name=data.get("display_name"),
-                proxy=data.get("proxy"),
-            )
+            kwargs = {}
+            if "display_name" in data:
+                kwargs["display_name"] = data.get("display_name")
+            if "need_proxy" in data:
+                # None = 无规则（跟随全局），True/False = 用代理/直连
+                kwargs["need_proxy"] = data.get("need_proxy")
+            domain = update_domain(name, **kwargs)
             self._send_json({"ok": True, "domain": domain})
             return
 
@@ -230,6 +254,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "缺少 url 或 tag_id"}, 400)
                 return
             remove_tag_from_record(url, int(tag_id))
+            self._send_json({"ok": True})
+            return
+
+        if path == "/api/proxy-rule":
+            rule_id = (qs.get("id") or [""])[0]
+            if not rule_id or not delete_proxy_rule(int(rule_id)):
+                self._send_json({"ok": False, "error": "规则不存在"}, 404)
+                return
             self._send_json({"ok": True})
             return
 

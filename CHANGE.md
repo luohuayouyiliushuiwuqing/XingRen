@@ -8,6 +8,77 @@
 
 ---
 
+## 2026-10-08 17:21:37 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 修复代理映射面板 `.proxy-row` 内三个控件的尺寸问题（style.css + index.html）
+
+  - **根因**：`.proxy-row .input { flex: 1 }` 同时命中模式输入框与下拉框，
+    只能靠 `.rule-select { … !important }` 硬压；且 `flex: 1` 缺 `min-width: 0`，
+    flex 子项默认不可收缩，窄容器下会撑破行；三者高度也不一致
+  - `style.css`：`.proxy-row` 改 `align-items: stretch`（三者等高齐平）；
+    输入框 `flex: 1 1 0; min-width: 0`（占满剩余且可收缩）；
+    下拉改 `.proxy-row .rule-select`（与上条同特异性 0,2,0，靠声明顺序覆盖，
+    **去掉 `!important`**），宽 92px；按钮 `flex: 0 0 auto; white-space: nowrap`
+  - `index.html`：`ruleNeedSelect` 补 `title` 提示
+
+  验证：CSS 两条同特异性规则声明顺序正确；`!important` 无残留；
+  页面与 style.css 均 200，级联后 `.rule-select` 规则生效。
+
+## 2026-10-08 17:15:44 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 代理映射改为「是否需要代理」布尔判定，不再存代理地址（6 文件，+399 / -43）
+
+  - **语义**：映射只表达要不要走代理，实际地址统一由全局代理一处配置。
+    - `proxy_rules.need_proxy` INTEGER：1=用代理，0=强制直连（规则本身即决策，二态）
+    - `domains.need_proxy` INTEGER **可空**：NULL=无规则跟随全局，1=用代理，0=强制直连（三态）
+    - 旧 `proxy TEXT` 地址列已删除
+  - **迁移**（`_migrate_to_bool_proxy`）：`proxy_rules` 空地址→0；
+    `domains` 空地址→**NULL 而非 0**——旧语义 `proxy=''` 是「无规则跟随全局」，
+    若误迁成 0 会导致全站被强制直连
+  - **`_effective_proxy` 三级解析**：URL 模式规则 > 域名规则 > 全局代理默认值；
+    规则命中即强制（0 直接返回 None，不再向下兜底）
+  - `records.py`：`_UNSET` 哨兵区分「本次不改」与「设为无规则」；
+    `get_domain_need_proxy` 返回 `True/False/None`
+  - `server.py`：`PATCH /api/domain` 只更新 payload 里出现的字段
+  - `app.js` / `index.html`：规则与域名的代理地址输入框改为
+    「用代理 / 直连 / 跟随全局」下拉；全局代理地址仅保留在面板顶部一处
+
+  **修复**：本地库已被错误迁移污染（11 个域名 need_proxy=0），
+  经重建 `domains` 表修正为 NULL；服务器侧未迁移过，拉取新代码后按正确逻辑执行。
+
+  验证：JS 语法 / Python 编译；迁移后 `proxy` 列已删、`need_proxy` 已生成；
+  三级优先级 5 个断言全过（含规则压过域名规则）；测试规则已清理。
+
+## 2026-10-08 17:04:48 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 新增代理映射（URL 模式通配符）+ 独立设置面板；移除工具栏代理输入框（5 文件，+293 / -13）
+
+  - `records.py`：新表 `proxy_rules(id, pattern, proxy)`，`proxy` 空串 = **强制直连**；
+    `match_proxy_rule(url)` 用 `fnmatchcase` 匹配——模式含 `/` 时连路径一起匹配，
+    否则只匹配主机名；规则按模式长度降序，更具体的先命中；
+    `upsert_proxy_rule` / `delete_proxy_rule` / `list_proxy_rules` CRUD
+  - `server.py`：`_effective_proxy` 改为三级优先级
+    **URL 模式规则 > 域名代理 > 全局代理**；规则命中即为强制值（空串→直连，不再向下兜底）；
+    新增 `GET /api/proxy-rules`、`POST /api/proxy-rule`、`DELETE /api/proxy-rule?id=…`
+  - `app.js`：新增「代理」面板（`openProxyPanel` / `renderProxyPanel` /
+    `saveGlobalProxy` / `addRule`），含三段——全局代理、URL 模式规则（增删）、
+    域名代理（只读列表，点域名可跳转编辑）；**新增 `state.globalProxy`，
+    移除工具栏 `proxyInput` 输入框**，`createCard` / `fetchRecord` /
+    `importFromFile` 改读 `state.globalProxy`
+  - `index.html`：toolbar 加「代理」按钮；移除 `#proxyInput`；加 `#proxyMask` 面板
+  - `style.css`：删 `.input.proxy`；新增 `.proxy-panel` / `.proxy-section` /
+    `.rule-list` / `.rule-row` / `.rule-pattern` / `.rule-proxy` / `.rule-del` 样式
+
+  验证：8 个通配符匹配用例全过（`*.google.com` 不匹配顶级域名、
+  `github.com/*` 不匹配 gist.github.com 等）；API 增删查 200；强制直连解析为 None；
+  JS 语法通过；`proxyInput` 无残留；服务启动 200。
+
 ## 2026-10-08 16:50:20 +0800
 
 - **用户**: haijie yin

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from fnmatch import fnmatchcase
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS domains (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL DEFAULT '',
-    proxy        TEXT NOT NULL DEFAULT '',
+    need_proxy   INTEGER,  -- NULL=无规则(跟随全局), 1=用代理, 0=强制直连
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
@@ -53,6 +54,31 @@ CREATE TABLE IF NOT EXISTS record_tags (
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
 )
 """
+
+_SCHEMA_PROXY_RULES = """
+CREATE TABLE IF NOT EXISTS proxy_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern    TEXT NOT NULL UNIQUE,        -- "*.google.com" / "github.com/*"
+    need_proxy INTEGER NOT NULL DEFAULT 1,  -- 1=用全局代理, 0=强制直连
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+# 代理只表达「要不要走」，具体地址仅存于全局配置一处。
+# 旧表存的是代理地址（proxy TEXT）：
+#   proxy_rules 旧语义 proxy='' = 强制直连 → need_proxy=0
+#   domains     旧语义 proxy='' = 无规则跟随全局 → need_proxy=NULL（不能迁成 0，否则全站被强制直连）
+def _migrate_to_bool_proxy(conn: sqlite3.Connection) -> None:
+    for table, empty_value in (("proxy_rules", "0"), ("domains", "NULL")):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if "proxy" not in cols:
+            continue
+        if "need_proxy" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN need_proxy INTEGER")
+        conn.execute(
+            f"UPDATE {table} SET need_proxy = CASE WHEN proxy != '' THEN 1 ELSE {empty_value} END"
+        )
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN proxy")
 
 
 def _root_domain(url: str) -> str:
@@ -92,7 +118,9 @@ def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_SCHEMA_DOMAINS)
     conn.execute(_SCHEMA_TAGS)
     conn.execute(_SCHEMA_RECORD_TAGS)
+    conn.execute(_SCHEMA_PROXY_RULES)
     conn.execute("PRAGMA journal_mode=WAL")
+    _migrate_to_bool_proxy(conn)
 
     # 迁移：group_name 列 → tags 表（一次性）
     try:
@@ -189,43 +217,114 @@ def delete_record(url: str) -> bool:
 
 # ──────────────────────── Domains ────────────────────────
 
+_UNSET = object()  # 与「值为 None」区分开：None = 设为无规则，_UNSET = 本次不改
+
+
+def _domain_row(row: sqlite3.Row) -> dict:
+    return {"id": row["id"], "name": row["name"],
+            "display_name": row["display_name"],
+            # None = 无规则（跟随全局），True = 用代理，False = 强制直连
+            "need_proxy": None if row["need_proxy"] is None else bool(row["need_proxy"])}
+
+
 def list_domains() -> list[dict]:
     with _db() as conn:
         rows = conn.execute("SELECT * FROM domains ORDER BY name").fetchall()
-        return [{"id": r["id"], "name": r["name"], "display_name": r["display_name"],
-                 "proxy": r["proxy"]} for r in rows]
+        return [_domain_row(r) for r in rows]
 
 
 def get_domain(name: str) -> dict | None:
     with _db() as conn:
         row = conn.execute("SELECT * FROM domains WHERE name = ?", (name,)).fetchone()
-        if not row:
-            return None
-        return {"id": row["id"], "name": row["name"], "display_name": row["display_name"],
-                "proxy": row["proxy"]}
+        return _domain_row(row) if row else None
 
 
-def update_domain(name: str, display_name: str = None, proxy: str = None) -> dict | None:
+def update_domain(name: str, display_name=_UNSET, need_proxy=_UNSET) -> dict:
     with _db() as conn:
         # 确保域名存在
         conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))
-        if display_name is not None:
-            conn.execute("UPDATE domains SET display_name = ? WHERE name = ?", (display_name, name))
-        if proxy is not None:
-            conn.execute("UPDATE domains SET proxy = ? WHERE name = ?", (proxy, name))
+        if display_name is not _UNSET:
+            conn.execute("UPDATE domains SET display_name = ? WHERE name = ?",
+                         (display_name or "", name))
+        if need_proxy is not _UNSET:
+            # None → NULL（无规则），True/False → 1/0
+            value = None if need_proxy is None else (1 if need_proxy else 0)
+            conn.execute("UPDATE domains SET need_proxy = ? WHERE name = ?", (value, name))
         row = conn.execute("SELECT * FROM domains WHERE name = ?", (name,)).fetchone()
-        return {"id": row["id"], "name": row["name"], "display_name": row["display_name"],
-                "proxy": row["proxy"]}
+        return _domain_row(row)
 
 
-def get_domain_proxy(url: str) -> str:
-    """返回该域名的代理地址，空字符串表示用全局代理。"""
+def get_domain_need_proxy(url: str) -> bool | None:
+    """返回该域名是否要走代理；无域名规则时返回 None（由全局代理兜底）。"""
     domain = _root_domain(url)
     if not domain:
-        return ""
+        return None
     with _db() as conn:
-        row = conn.execute("SELECT proxy FROM domains WHERE name = ?", (domain,)).fetchone()
-        return row["proxy"] if row else ""
+        row = conn.execute("SELECT need_proxy FROM domains WHERE name = ?", (domain,)).fetchone()
+        if row is None or row["need_proxy"] is None:
+            return None
+        return bool(row["need_proxy"])
+
+
+# ──────────────────────── Proxy rules ────────────────────────
+
+def _rule_row(row: sqlite3.Row) -> dict:
+    return {"id": row["id"], "pattern": row["pattern"],
+            "need_proxy": bool(row["need_proxy"])}
+
+
+def list_proxy_rules() -> list[dict]:
+    with _db() as conn:
+        rows = conn.execute("SELECT * FROM proxy_rules ORDER BY length(pattern) DESC, pattern").fetchall()
+        return [_rule_row(r) for r in rows]
+
+
+def upsert_proxy_rule(pattern: str, need_proxy: bool) -> dict:
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO proxy_rules (pattern, need_proxy) VALUES (?, ?) "
+            "ON CONFLICT(pattern) DO UPDATE SET need_proxy = excluded.need_proxy",
+            (pattern.strip(), 1 if need_proxy else 0),
+        )
+        row = conn.execute("SELECT * FROM proxy_rules WHERE pattern = ?", (pattern.strip(),)).fetchone()
+        return _rule_row(row)
+
+
+def delete_proxy_rule(rule_id: int) -> bool:
+    with _db() as conn:
+        cur = conn.execute("DELETE FROM proxy_rules WHERE id = ?", (rule_id,))
+        return cur.rowcount > 0
+
+
+def _pattern_matches(pattern: str, host: str, path: str) -> bool:
+    """通配符匹配：含 / 时连路径一起匹配，否则只匹配主机名。"""
+    target = f"{host}{path}" if "/" in pattern else host
+    return fnmatchcase(target.lower(), pattern.lower())
+
+
+def match_proxy_rule(url: str) -> tuple[bool, bool]:
+    """按 URL 模式匹配代理规则。
+
+    返回 (是否命中, 是否要走代理)。未命中返回 (False, False)，
+    交由域名规则 / 全局代理兜底。
+    规则按模式长度降序排列，更长（更具体）的先匹配。
+    """
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        path = p.path or "/"
+    except Exception:
+        return False, False
+    if not host:
+        return False, False
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT pattern, need_proxy FROM proxy_rules ORDER BY length(pattern) DESC, pattern"
+        ).fetchall()
+    for row in rows:
+        if _pattern_matches(row["pattern"], host, path):
+            return True, bool(row["need_proxy"])
+    return False, False
 
 
 # ──────────────────────── Tags ────────────────────────

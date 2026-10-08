@@ -19,8 +19,8 @@
       <option value="txt">TXT</option>
       <option value="html">HTML</option>
     </select>
+    <button id="proxyPanelBtn" class="btn-ghost">代理</button>
     <input id="searchInput" class="input search" placeholder="搜索标题或链接…">
-    <input id="proxyInput" class="input proxy" placeholder="代理，如 http://127.0.0.1:7892">
   </header>
 
   <main>
@@ -67,12 +67,56 @@
       <div class="domain-form">
         <label>显示别名</label>
         <input id="domainNameInput" class="input" placeholder="如：深度求索" spellcheck="false">
-        <label>域名代理（留空用全局代理）</label>
-        <input id="domainProxyInput" class="input" placeholder="如：http://127.0.0.1:7892" spellcheck="false">
+        <label>是否需要代理</label>
+        <select id="domainNeedSelect" class="input">
+          <option value="">跟随全局</option>
+          <option value="1">用代理</option>
+          <option value="0">直连</option>
+        </select>
       </div>
       <div class="modal-actions">
         <button id="domainCancel" class="btn-ghost">取消</button>
         <button id="domainSave" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 代理映射设置面板 -->
+  <div id="proxyMask" class="modal-mask" hidden>
+    <div class="modal proxy-panel">
+      <div class="modal-title">代理映射</div>
+
+      <div class="proxy-section">
+        <label>全局代理（工具栏那个输入框）</label>
+        <div class="proxy-row">
+          <input id="globalProxyInput" class="input grow" placeholder="留空 = 不使用全局代理" spellcheck="false">
+          <button id="globalProxySave" class="btn-ghost">保存</button>
+        </div>
+      </div>
+
+      <div class="proxy-section">
+        <label>URL 模式规则（优先级最高，命中即强制）</label>
+        <div id="ruleList" class="rule-list"></div>
+        <div class="proxy-row">
+          <input id="rulePatternInput" class="input" placeholder="模式，如 *.google.com" spellcheck="false">
+          <select id="ruleNeedSelect" class="input rule-select" title="这条规则要不要走代理">
+            <option value="1">用代理</option>
+            <option value="0">直连</option>
+          </select>
+          <button id="ruleAddBtn" class="btn-ghost">添加</button>
+        </div>
+        <div class="proxy-hint">只判断要不要走代理，实际地址用上面的全局代理。
+          支持 <code>*</code> 通配符：<code>*.example.com</code> 匹配子域名，
+          <code>example.com/*</code> 匹配路径（含 <code>/</code> 时连路径一起匹配）。</div>
+      </div>
+
+      <div class="proxy-section">
+        <label>域名规则（次优先，点击域名可编辑别名）</label>
+        <div id="domainProxyList" class="rule-list"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="proxyClose" class="btn-primary">关闭</button>
       </div>
     </div>
   </div>
