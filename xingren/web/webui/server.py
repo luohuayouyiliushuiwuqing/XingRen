@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 from curl_cffi.requests import get as http_get
 
 from xingren.core.fetcher import _is_domestic, get_metadata
+from xingren.core.proxy import detect_proxy
 from xingren.core.records import (
     DATA_DIR, add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
     get_domain_need_proxy, list_domains, list_proxy_rules, list_records, list_tags,
@@ -84,6 +85,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/proxy-rules":
             self._send_json({"rules": list_proxy_rules()})
+            return
+        if path == "/api/proxy-detect":
+            # 每次都重新探测（并行，约 0.25s），不缓存：代理可能刚启动
+            self._send_json({"ok": True, "proxy": detect_proxy()})
             return
         if path == "/api/img":
             self.handle_img(qs)
@@ -191,6 +196,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "rule": rule})
             return
 
+        if path == "/api/proxy-detect":
+            self._send_json({"ok": True, "proxy": detect_proxy()})
+            return
+
         self.send_error(404)
 
     def do_PATCH(self) -> None:
@@ -287,6 +296,9 @@ def main() -> None:
     if host == "0.0.0.0":
         print(f"  本机访问：http://127.0.0.1:{port}/", flush=True)
         print("  已监听所有网卡且无鉴权；仅本机使用请加 --host 127.0.0.1", flush=True)
+    # 自动探测本地代理端口（7889-7899），只做提示，不改变任何配置
+    found = detect_proxy()
+    print(f"  代理探测（7889-7899）：{found or '未发现本地代理'}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

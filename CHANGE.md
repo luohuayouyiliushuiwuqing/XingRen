@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-08 17:27:54 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 代理端口自动探测（7889-7899 区间）——新模块 `xingren/core/proxy.py`
+
+  - `detect_proxy(host="127.0.0.1")`：`ThreadPoolExecutor` **并行**对 7889-7899
+    逐端口 `socket.create_connection`（单端口超时 0.25s，总耗时约等于单次超时），
+    按端口升序返回第一个可连接的 `http://127.0.0.1:<port>`，全不通返回 None
+  - `server.py`：新增 `GET`/`POST /api/proxy-detect`（每次重新探测，不缓存——
+    代理可能刚启动）；启动横幅打印 `代理探测（7889-7899）：…`（仅提示，不改配置）
+  - `app.js`：`detectProxy({fill, announce})`；页面加载自动探测并**采纳探测结果**
+    （探测不到则保持原配置——本地探测找不到不代表没有远程代理）；
+    面板全局代理行加「检测」按钮可随时重探
+  - `index.html`：`#proxyDetectBtn`；补说明「启动时会自动探测…也可随时点检测」
+
+  验证：**实测探测到本机真实代理 `http://127.0.0.1:7897`（0.02s）**；
+  启动横幅正确打印；GET/POST 均返回 `{ok:true, proxy:…}`；
+  绑定 7889 后返回 7889（区间内最小可连接端口）；JS 语法通过。
+
 ## 2026-10-08 17:21:37 +0800
 
 - **用户**: haijie yin

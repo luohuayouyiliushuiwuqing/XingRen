@@ -87,11 +87,14 @@
       <div class="modal-title">代理映射</div>
 
       <div class="proxy-section">
-        <label>全局代理（工具栏那个输入框）</label>
+        <label>全局代理（映射规则「用代理」时用这个地址）</label>
         <div class="proxy-row">
           <input id="globalProxyInput" class="input grow" placeholder="留空 = 不使用全局代理" spellcheck="false">
+          <button id="proxyDetectBtn" class="btn-ghost" title="自动探测 7889-7899 端口">检测</button>
           <button id="globalProxySave" class="btn-ghost">保存</button>
         </div>
+        <div class="proxy-hint">启动时会自动探测 7889-7899 区间的本地代理端口并填入此处；
+          也可随时点「检测」重新探测。</div>
       </div>
 
       <div class="proxy-section">

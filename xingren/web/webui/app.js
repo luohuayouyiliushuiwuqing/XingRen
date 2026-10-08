@@ -494,6 +494,28 @@ async function saveGlobalProxy() {
   setStatus(val ? `全局代理已设为 ${val}` : "已清除全局代理");
 }
 
+/* 自动探测本地代理端口（7889-7899）；detectOnly 时只返回不写状态 */
+async function detectProxy({ fill = false, announce = true } = {}) {
+  try {
+    const data = await (await fetch("/api/proxy-detect", { method: "POST" })).json();
+    const found = data.proxy || "";
+    if (found) {
+      if (fill) {
+        state.globalProxy = found;
+        const input = $("globalProxyInput");
+        if (input) input.value = found;
+      }
+      if (announce) setStatus(`检测到本地代理：${found}`);
+    } else if (announce) {
+      setStatus("7889-7899 区间未发现本地代理", "err");
+    }
+    return found;
+  } catch (e) {
+    if (announce) setStatus("代理探测失败：" + e.message, "err");
+    return "";
+  }
+}
+
 async function addRule() {
   const pattern = $("rulePatternInput").value.trim();
   const need_proxy = $("ruleNeedSelect").value === "1";
@@ -758,6 +780,7 @@ function init() {
     if (e.target === $("proxyMask")) $("proxyMask").hidden = true;
   });
   $("globalProxySave").addEventListener("click", saveGlobalProxy);
+  $("proxyDetectBtn").addEventListener("click", () => detectProxy({ fill: true }));
   $("ruleAddBtn").addEventListener("click", addRule);
   $("rulePatternInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
 
@@ -780,6 +803,8 @@ function init() {
   });
 
   loadRecords();
+  /* 页面加载时自动探测本地代理端口；探测到就采纳（未探测到保持原配置） */
+  detectProxy({ fill: true, announce: false });
 }
 
 document.addEventListener("DOMContentLoaded", init);
