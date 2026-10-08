@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-10-08 13:48:11 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 看板按域名自动分组展示（纯前端，后端零改动）
+
+  - `app.js`：`render()` 重写，用 `Map` 按 `hostOf()` 分组，组按记录数降序排列；
+    0 或 1 个域名时退化为原平铺（不显示域名头），多域名才渲染分组区块；
+    状态栏追加域名计数（`X 条匹配，Y 个域名`）
+  - `style.css`：新增 `.domain-group` / `.domain-header` / `.domain-name` /
+    `.domain-count` / `.domain-grid` 样式，域名头带下划线分隔 + 圆角计数徽标
+  - 搜索过滤行为不变：过滤后重新分组，空域名组自动消失
+  - 不入库、不改 schema、不改后端——域名从 URL 实时提取
+
+  验证：JS 语法检查通过；服务启动正常；`render()` 中 `domain-group` /
+  `domain-header` / `domain-grid` / `sorted.length` 逻辑完整；
+  当前仅 1 个域名（mimo.mi.com），前端正确退化为平铺。
+
 ## 2026-10-08 12:27:13 +0800
 
 - **用户**: haijie yin

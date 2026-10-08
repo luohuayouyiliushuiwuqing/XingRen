@@ -145,12 +145,38 @@ function render() {
   const board = $("board");
   board.innerHTML = "";
   const visible = state.records.filter(matchesFilter);
-  for (const record of visible) board.appendChild(createCard(record));
+
+  /* 按域名分组，组按记录数降序 */
+  const groups = new Map();
+  for (const r of visible) {
+    const d = hostOf(r.url) || "unknown";
+    (groups.get(d) ?? groups.set(d, []).get(d)).push(r);
+  }
+  const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+
+  if (sorted.length <= 1) {
+    /* 0 或 1 个域名：不显示域名头，直接平铺（保持原有简洁外观） */
+    for (const r of visible) board.appendChild(createCard(r));
+  } else {
+    for (const [domain, recs] of sorted) {
+      const section = document.createElement("div");
+      section.className = "domain-group";
+      const header = document.createElement("div");
+      header.className = "domain-header";
+      header.innerHTML = `<span class="domain-name">${domain}</span><span class="domain-count">${recs.length}</span>`;
+      const grid = document.createElement("div");
+      grid.className = "domain-grid";
+      for (const r of recs) grid.appendChild(createCard(r));
+      section.append(header, grid);
+      board.appendChild(section);
+    }
+  }
+
   $("emptyHint").hidden = state.records.length > 0;
   setStatus(
     state.filter
-      ? `${visible.length} / ${state.records.length} 条匹配`
-      : `共 ${state.records.length} 条`
+      ? `${visible.length} / ${state.records.length} 条匹配，${sorted.length} 个域名`
+      : `共 ${state.records.length} 条，${sorted.length} 个域名`
   );
 }
 
