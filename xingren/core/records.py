@@ -207,6 +207,9 @@ def _ensure(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _db():
+    if not DB_PATH.parent.is_dir():
+        # 目录不存在就创建（文件夹被删 / 外置盘重新挂载后自动重建，直接可用）
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
@@ -225,6 +228,7 @@ def get_storage_paths() -> dict:
         "path": str(DATA_DIR),
         "db_path": str(DB_PATH),
         "cache_dir": str(DATA_DIR / "cache" / "img"),
+        "exists": DATA_DIR.exists(),
     }
 
 
@@ -236,10 +240,10 @@ def get_cache_dir() -> Path:
 def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
     """切换存储目录：数据库、图片缓存等本地私有数据整体迁移过去。
 
-    - 相对路径按仓库根解析；输入的是文件而不是目录时拒绝
-    - migrate=True 时：数据库用 SQLite backup 迁移（含 WAL 合并）后删除旧文件，
-      cache/ 目录整体移走——项目目录里不再残留本地数据
-    - 目标目录已有 metadata.db 时拒绝，避免覆盖既有数据
+    - 目录不存在则创建；相对路径按仓库根解析，传入文件而不是目录时拒绝
+    - 目标已有 metadata.db：直接使用它（不覆盖、不迁移旧库，旧库留在原处）
+    - 目标没有数据库时 migrate=True：SQLite backup 迁移（含 WAL 合并）后删除旧文件、
+      cache/ 整体并入目标——项目目录不再残留本地数据
     - 结果写入 config.json（仓库根），下次启动沿用；调用后立即生效，无需重启
     """
     global DATA_DIR, DB_PATH
@@ -263,16 +267,24 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
         same = target == old_data_dir.resolve()
     except OSError:
         same = target == old_data_dir
-    if same:
+    # 同路径但目录已不存在：不视为 no-op，往下走 mkdir 重建（修复场景）
+    if same and target.is_dir():
         return {**get_storage_paths(), "migrated": False}
 
     target.mkdir(parents=True, exist_ok=True)
     dst_db = target / "metadata.db"
-    if dst_db.exists():
-        raise ValueError(f"目标目录已有 metadata.db，为避免覆盖数据请换一个目录：{dst_db}")
-
     migrated = False
-    if migrate and old_db.exists():
+    db_used_existing = False
+    if dst_db.exists():
+        # 目标已有数据库：直接使用它——不覆盖、不迁移旧库（旧库留在原处）
+        try:
+            probe = sqlite3.connect(dst_db)
+            probe.execute("SELECT count(*) FROM sqlite_master")
+            probe.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError(f"目标目录的 metadata.db 不是有效的 SQLite 数据库：{dst_db}") from exc
+        db_used_existing = True
+    elif migrate and old_db.exists():
         # backup 会把 WAL 中未合并的数据一并写进目标，得到自包含的新库文件
         src = sqlite3.connect(old_db)
         dst = sqlite3.connect(dst_db)
@@ -305,7 +317,7 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
         cfg["storage_dir"] = str(target)
     cfg.pop("db_path", None)  # 清掉旧版「数据库单独指定位置」的配置键
     _save_config(cfg)
-    return {**get_storage_paths(), "migrated": migrated}
+    return {**get_storage_paths(), "migrated": migrated, "db_used_existing": db_used_existing}
 
 
 # ──────────────────────── Records ────────────────────────
@@ -570,3 +582,47 @@ def get_record_tags(url: str) -> list[dict]:
             (url,),
         ).fetchall()
         return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+
+def list_proxy_domains() -> list[str]:
+    """最终会走代理的域名（供侧边栏标记）。
+
+    判定优先级与服务端 _effective_proxy 一致：
+    URL 模式规则命中 → 规则说了算；否则看域名规则是否为「用代理」。
+    候选 = domains 表 ∪ 全部记录按根域名去重。
+    单连接取数、内存判定——避免逐域名开库触发 _ensure 全表扫描。
+    """
+    with _db() as conn:
+        names = {row["name"] for row in conn.execute("SELECT name FROM domains")}
+        for row in conn.execute("SELECT DISTINCT url FROM records"):
+            d = _root_domain(row["url"])
+            if d:
+                names.add(d)
+        # 与 match_proxy_rule 同序：模式更长（更具体）的先命中
+        rules = conn.execute(
+            "SELECT pattern, need_proxy FROM proxy_rules ORDER BY length(pattern) DESC, pattern"
+        ).fetchall()
+        domain_need = {
+            row["name"]: row["need_proxy"]
+            for row in conn.execute("SELECT name, need_proxy FROM domains")
+        }
+
+    proxied = []
+    for name in sorted(names):
+        # 侧边栏是根域名，而 *.example.com 不匹配顶级域名本身：
+        # 根域名与 www. 子域名各探测一次，任一命中即代表该域名下的记录
+        hit, need = False, False
+        for host in (name, f"www.{name}"):
+            for rule in rules:
+                if _pattern_matches(rule["pattern"], host, "/"):
+                    hit, need = True, bool(rule["need_proxy"])
+                    break
+            if hit:
+                break
+        if hit:
+            if need:
+                proxied.append(name)
+        elif domain_need.get(name):
+            # SQLite 返回整数 1/0/NULL：真值判断即可（1=用代理，0/NULL 不标）
+            proxied.append(name)
+    return proxied

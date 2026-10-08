@@ -151,9 +151,9 @@
             <button id="fsPick" class="btn-primary">选中此目录</button>
           </div>
         </div>
-        <div class="proxy-hint">保存后数据库（metadata.db）、图片缓存（cache/）等本地私有数据
-          会整体迁移到新目录，原位置文件移走，不再占用项目目录；立即生效，无需重启。
-          目标目录里已有 metadata.db 时会拒绝，避免覆盖数据。</div>
+        <div class="proxy-hint">目录不存在会自动创建；目标里已有数据库就直接使用它（不覆盖）。
+          没有数据库时，保存会把数据库（metadata.db）、图片缓存（cache/）等本地私有数据
+          整体迁移过去，原位置文件移走，不再占用项目目录；立即生效，无需重启。</div>
       </div>
       <div class="modal-actions">
         <button id="dbClose" class="btn-ghost">关闭</button>

@@ -7,14 +7,18 @@ const $ = (id) => document.getElementById(id);
 const state = {
   records: [],
   filter: "",
-  selectedDomain: null,    // null = "全部"，字符串 = 选中的域名
+  selectedDomain: null,    // null = "全部"，字符串 = 选中的域名 / "__other__"（零散域名合并项）
   selectedTag: null,       // null = "全部"，字符串 = 选中的标签
   globalProxy: "http://127.0.0.1:7897",  // 全局代理，在「代理」面板里编辑
+  proxyDomains: new Set(), // 最终会走代理的域名（侧边栏标记用）
   renameTarget: null,
   tagTarget: null,         // 标签弹窗的目标记录
   domainTarget: null,      // 域名管理弹窗的目标域名
   detailTarget: null,
 };
+
+/* 单域名少于该条数：侧边栏与看板分组都收进「其他」类别 */
+const MIN_GROUP = 10;
 
 function setStatus(msg, kind) {
   const el = $("statusText");
@@ -59,6 +63,10 @@ function rootDomain(host) {
 async function loadRecords() {
   try {
     const data = await (await fetch("/api/records")).json();
+    if (data.error) { // 服务端异常（如存储目录不存在）：原样提示
+      setStatus("加载失败：" + data.error, "err");
+      return;
+    }
     state.records = data.records || [];
     render();
     setStatus(`共 ${state.records.length} 条`);
@@ -177,7 +185,7 @@ function buildSidebar() {
   all.addEventListener("click", () => { state.selectedDomain = null; state.selectedTag = null; render(); });
   sb.appendChild(all);
 
-  /* ── 域名 ── */
+  /* ── 域名（少于 MIN_GROUP 条的零散域名收进「其他」） ── */
   sb.appendChild(el("div", "sidebar-label", "域名"));
   const domainCounts = new Map();
   for (const r of state.records) {
@@ -185,11 +193,50 @@ function buildSidebar() {
     domainCounts.set(d, (domainCounts.get(d) || 0) + 1);
   }
   const sortedDomains = [...domainCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+  const proxyItem = (label, count, active, onClick, badgeTitle) => {
+    const proxied = state.proxyDomains.has(label);
+    const item = el("div", "sidebar-item" + (active ? " active" : "") + (proxied ? " proxy" : ""));
+    let inner = `<span>${label}</span>`;
+    if (proxied) inner += `<span class="proxy-badge" title="${badgeTitle || "匹配代理规则：走代理"}">代理</span>`;
+    inner += `<span class="sidebar-count">${count}</span>`;
+    item.innerHTML = inner;
+    item.addEventListener("click", onClick);
+    sb.appendChild(item);
+    return item;
+  };
+
+  let minorTotal = 0;
+  let minorProxied = 0;
+  const minorNames = [];
   for (const [domain, count] of sortedDomains) {
+    if (count < MIN_GROUP) {
+      minorNames.push(domain);
+      minorTotal += count;
+      if (state.proxyDomains.has(domain)) minorProxied++;
+      continue;
+    }
     const active = state.selectedDomain === domain;
-    const item = el("div", "sidebar-item" + (active ? " active" : ""));
-    item.innerHTML = `<span>${domain}</span><span class="sidebar-count">${count}</span>`;
-    item.addEventListener("click", () => { state.selectedDomain = active ? null : domain; render(); });
+    proxyItem(domain, count, active, () => {
+      state.selectedDomain = active ? null : domain;
+      render();
+    });
+  }
+  if (minorNames.length) {
+    const active = state.selectedDomain === "__other__";
+    // 「其他」本身不在 proxyDomains 里：有任一成员走代理就打标
+    const proxied = minorProxied > 0;
+    const item = el("div", "sidebar-item" + (active ? " active" : "") + (proxied ? " proxy" : ""));
+    let inner = `<span>其他</span>`;
+    if (proxied) {
+      inner += `<span class="proxy-badge" title="包含 ${minorProxied} 个走代理的域名">代理</span>`;
+    }
+    inner += `<span class="sidebar-count">${minorTotal}</span>`;
+    item.innerHTML = inner;
+    item.addEventListener("click", () => {
+      state.selectedDomain = active ? null : "__other__";
+      render();
+    });
     sb.appendChild(item);
   }
 
@@ -222,7 +269,18 @@ function buildSidebar() {
 
 function getVisibleRecords() {
   let visible = state.records.filter(matchesFilter);
-  if (state.selectedDomain) {
+  if (state.selectedDomain === "__other__") {
+    /* 零散域名合并项：按全量计数 < MIN_GROUP 的域名成员过滤 */
+    const counts = new Map();
+    for (const r of state.records) {
+      const d = rootDomain(hostOf(r.url)) || "unknown";
+      counts.set(d, (counts.get(d) || 0) + 1);
+    }
+    const minorSet = new Set(
+      [...counts.entries()].filter(([, c]) => c < MIN_GROUP).map(([d]) => d)
+    );
+    visible = visible.filter(r => minorSet.has(rootDomain(hostOf(r.url)) || "unknown"));
+  } else if (state.selectedDomain) {
     visible = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
   }
   if (state.selectedTag) {
@@ -235,7 +293,31 @@ function getVisibleRecords() {
   return visible;
 }
 
+/* ---------- 走代理域名（侧边栏标记数据源） ---------- */
+
+async function loadProxyDomains() {
+  try {
+    const data = await (await fetch("/api/proxy-domains")).json();
+    state.proxyDomains = new Set(data.domains || []);
+  } catch (e) {
+    state.proxyDomains = new Set();
+  }
+  render();
+}
+
 /* ---------- 渲染 ---------- */
+
+/* 大组分片建卡片：每帧 100 张，展开即可见且不卡顿 */
+function appendCardsChunked(grid, recs, start = 0) {
+  const CHUNK = 100;
+  const end = Math.min(start + CHUNK, recs.length);
+  for (let i = start; i < end; i++) grid.appendChild(createCard(recs[i]));
+  if (end < recs.length) {
+    requestAnimationFrame(() => {
+      if (grid.isConnected) appendCardsChunked(grid, recs, end);
+    });
+  }
+}
 
 function render() {
   const board = $("board");
@@ -245,15 +327,30 @@ function render() {
   const visible = getVisibleRecords();
 
   /* 按域名分组显示 */
-  const domainMap = new Map();
+  let domainMap = new Map();
   for (const r of visible) {
     const d = rootDomain(hostOf(r.url)) || "unknown";
     (domainMap.get(d) ?? domainMap.set(d, []).get(d)).push(r);
   }
+
+  /* 少于 MIN_GROUP 条的零散域名收拢成一个「其他」类别；
+     已筛选到单一域名时不收拢（否则该域名自己会被吞进「其他」）；
+     「__other__」视图本身就是零散域名集合，照常收拢成一组 */
+  if (!state.selectedDomain || state.selectedDomain === "__other__") {
+    const major = new Map();
+    const minor = [];
+    for (const [d, recs] of domainMap) {
+      if (recs.length < MIN_GROUP) minor.push(...recs);
+      else major.set(d, recs);
+    }
+    if (minor.length) major.set("其他", minor);
+    domainMap = major;
+  }
+
   const sortedDomains = [...domainMap.entries()].sort((a, b) => b[1].length - a[1].length);
 
-  /* 分组条件放宽到「条数 > 20」：单域名上千条时也走分组，
-     否则平铺分支会一次性建出全部卡片 DOM 卡死浏览器 */
+  /* 分组条件包含「条数 > 20」：大列表走分组结构，
+     组内用 appendCardsChunked 分片建卡片，既默认展开又不卡顿 */
   if (sortedDomains.length <= 1 && visible.length <= 20) {
     // 平铺也包一层多列网格：.board 是纵向 flex，直接塞卡片会排成一列
     const grid = document.createElement("div");
@@ -271,16 +368,12 @@ function render() {
       grid.className = "domain-grid";
       section.append(header, grid);
 
-      const collapsed = recs.length > 20;
-      if (collapsed) {
-        section.classList.add("collapsed");   // 折叠组先不建卡片，展开时再补
-      } else {
-        for (const r of recs) grid.appendChild(createCard(r));
-      }
+      // 默认直接展开（分组头仍可点击手动收起/展开）
+      appendCardsChunked(grid, recs);
       header.addEventListener("click", () => {
         const opening = section.classList.contains("collapsed");
         if (opening && !grid.childElementCount) {
-          for (const r of recs) grid.appendChild(createCard(r));
+          appendCardsChunked(grid, recs);
         }
         section.classList.toggle("collapsed");
       });
@@ -290,7 +383,9 @@ function render() {
 
   $("emptyHint").hidden = visible.length > 0;
   const parts = [`共 ${state.records.length} 条`];
-  if (state.selectedDomain) parts.push(state.selectedDomain);
+  if (state.selectedDomain) {
+    parts.push(state.selectedDomain === "__other__" ? "其他" : state.selectedDomain);
+  }
   if (state.selectedTag && state.selectedTag !== "__untagged__") parts.push(state.selectedTag);
   if (state.selectedTag === "__untagged__") parts.push("未标签");
   parts.push(`${visible.length} 条显示`);
@@ -462,6 +557,7 @@ async function saveDomain() {
       body: JSON.stringify({ name, display_name, need_proxy }),
     });
     render();
+    loadProxyDomains(); // 域名规则变化 → 刷新侧边栏代理标记
     const label = need_proxy === null ? "跟随全局" : (need_proxy ? "用代理" : "直连");
     setStatus(`已更新域名 ${name}（${label}）`);
   } catch (e) {
@@ -493,6 +589,7 @@ async function renderProxyPanel() {
       del.addEventListener("click", async () => {
         await fetch(`/api/proxy-rule?id=${rule.id}`, { method: "DELETE" });
         renderProxyPanel();
+        loadProxyDomains(); // 规则删除 → 刷新侧边栏代理标记
       });
       row.appendChild(del);
       ruleBox.appendChild(row);
@@ -559,6 +656,7 @@ async function addRule() {
     body: JSON.stringify({ pattern, need_proxy }),
   });
   renderProxyPanel();
+  loadProxyDomains(); // 模式规则变化 → 刷新侧边栏代理标记
   setStatus(`已添加规则：${pattern} → ${need_proxy ? "用代理" : "直连"}`);
 }
 
@@ -829,6 +927,14 @@ async function openDbPanel() {
     $("dbCurrent").textContent =
       `目录: ${d.path}\n数据库: ${d.db_path}\n图片缓存: ${d.cache_dir}`;
     $("dbCurrent").style.whiteSpace = "pre-line";
+    if (d.exists === false) {
+      $("dbCurrent").textContent +=
+        "\n⚠ 目录不存在（可能已被移动或删除）——在下方重新选择一个目录，或输入同一路径点保存以重建";
+      $("dbCurrent").classList.add("missing");
+      setStatus("存储目录不存在：" + d.path, "err");
+    } else {
+      $("dbCurrent").classList.remove("missing");
+    }
   } catch (e) {
     $("dbCurrent").textContent = "读取失败：" + e.message;
   }
@@ -896,7 +1002,11 @@ async function saveDbPath() {
     await loadRecords(); // 从新存储目录重新加载
     setStatus(
       `存储目录已切换到 ${data.path}` +
-        (data.migrated ? "（数据与缓存已迁移）" : "") +
+        (data.db_used_existing
+          ? "（已直接使用该目录现有的数据库）"
+          : data.migrated
+            ? "（数据与缓存已迁移）"
+            : "") +
         `，共 ${data.records} 条`
     );
   } catch (e) {
@@ -912,6 +1022,21 @@ function init() {
   $("sidebarToggle").addEventListener("click", () => {
     $("sidebar").classList.toggle("collapsed");
   });
+
+  /* 滚轮落在侧边栏上时转发给右侧看板滚动——侧边栏自身固定不滑动。
+     用 document 捕获阶段监听：先于一切默认滚动行为执行，防止被子元素/缓存旧码干扰 */
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      const sb = $("sidebar");
+      if (!sb || sb.classList.contains("collapsed") || !sb.contains(e.target)) return;
+      e.preventDefault();
+      const wrap = document.querySelector(".board-wrap");
+      if (wrap) wrap.scrollTop += e.deltaY;
+    },
+    { capture: true, passive: false }
+  );
+  console.info("[sidebar-fixed] wheel handler v2 active");
 
   $("addBtn").addEventListener("click", addUrl);
   $("urlInput").addEventListener("keydown", (e) => {
@@ -1016,6 +1141,7 @@ function init() {
   });
 
   loadRecords();
+  loadProxyDomains(); // 先拿到走代理域名集合，回来后自动 render 打标
   /* 页面加载时自动探测本地代理端口；探测到就采纳（未探测到保持原配置） */
   detectProxy({ fill: true, announce: false });
 }

@@ -21,8 +21,8 @@ from xingren.core.proxy import detect_proxy
 from xingren.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
     get_cache_dir, get_domain_need_proxy, get_storage_paths, insert_quick_records,
-    list_domains, list_proxy_rules, list_records, list_tags, match_proxy_rule,
-    remove_tag_from_record, set_storage_dir, set_title, update_domain,
+    list_domains, list_proxy_domains, list_proxy_rules, list_records, list_tags,
+    match_proxy_rule, remove_tag_from_record, set_storage_dir, set_title, update_domain,
     upsert_proxy_rule, upsert_record,
 )
 
@@ -56,6 +56,18 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _safe(self, handler) -> None:
+        """处理器统一兜底：任何异常回 500 JSON，而不是直接掐断连接。"""
+        try:
+            handler()
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as exc:
+            try:
+                self._send_json({"ok": False, "error": str(exc)}, 500)
+            except Exception:
+                pass
+
     def _effective_proxy(self, url: str, global_proxy: str) -> str | None:
         """代理优先级：URL 模式规则 > 域名规则 > 全局代理默认值。
 
@@ -71,6 +83,18 @@ class Handler(BaseHTTPRequestHandler):
         return global_proxy or None
 
     def do_GET(self) -> None:
+        self._safe(self._do_GET)
+
+    def do_POST(self) -> None:
+        self._safe(self._do_POST)
+
+    def do_PATCH(self) -> None:
+        self._safe(self._do_PATCH)
+
+    def do_DELETE(self) -> None:
+        self._safe(self._do_DELETE)
+
+    def _do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -86,6 +110,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/proxy-rules":
             self._send_json({"rules": list_proxy_rules()})
+            return
+        if path == "/api/proxy-domains":
+            self._send_json({"domains": list_proxy_domains()})
             return
         if path == "/api/proxy-detect":
             # 每次都重新探测（并行，约 0.25s），不缓存：代理可能刚启动
@@ -109,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", CONTENT_TYPES[file_path.suffix])
         self.send_header("Content-Length", str(len(body)))
+        # 静态文件禁缓存：改完代码浏览器总能拿到新版（否则旧 tab 会一直跑旧 JS）
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -160,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 业务 ----------
 
-    def do_POST(self) -> None:
+    def _do_POST(self) -> None:
         path = urlparse(self.path).path
         data = self._read_json()
 
@@ -250,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
         parent = str(p.parent) if p.parent != p else ""
         return {"ok": True, "path": str(p), "parent": parent, "entries": entries[:500]}
 
-    def do_PATCH(self) -> None:
+    def _do_PATCH(self) -> None:
         path = urlparse(self.path).path
         data = self._read_json()
 
@@ -283,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
-    def do_DELETE(self) -> None:
+    def _do_DELETE(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)

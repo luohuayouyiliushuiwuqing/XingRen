@@ -106,6 +106,25 @@ main {
 }
 .sidebar-item:hover { background: var(--accent-weak); color: var(--accent); }
 .sidebar-item.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+.sidebar-item > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 走代理的域名：名称着色 + 「代理」徽标 */
+.sidebar-item.proxy > span:first-child { color: var(--accent); }
+.sidebar-item.proxy.active > span:first-child { color: var(--accent-hover); }
+.proxy-badge {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 0 6px;
+  margin: 0 4px;
+  border-radius: 6px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
 .sidebar-count {
   font-size: 11.5px;
   color: var(--faint);
@@ -511,6 +530,10 @@ main {
   white-space: pre-line;
 }
 .db-modal { width: min(580px, calc(100vw - 48px)); }
+.db-current.missing {
+  border-color: var(--err);
+  background: #fef2f2;
+}
 
 /* 目录点选器 */
 .fs-picker {
