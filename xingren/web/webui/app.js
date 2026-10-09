@@ -353,15 +353,19 @@ async function loadProxyDomains() {
 
 /* ---------- 渲染 ---------- */
 
-/* 分组分片建卡片：每帧 100 张，既不卡顿也不会一次建出全部节点 */
-function appendCardsChunked(grid, recs, start = 0) {
+/* 分组分片建卡片：每帧 100 张，既不卡顿也不会一次建出全部节点。
+   onDone 在**全部建完**时调用——补建期间占位高度一直留着，
+   高度不随分片增长而变，滚动位置才不会被顶走 */
+function appendCardsChunked(grid, recs, start = 0, onDone) {
   const CHUNK = 100;
   const end = Math.min(start + CHUNK, recs.length);
   for (let i = start; i < end; i++) grid.appendChild(createCard(recs[i]));
   if (end < recs.length) {
     requestAnimationFrame(() => {
-      if (grid.isConnected) appendCardsChunked(grid, recs, end);
+      if (grid.isConnected) appendCardsChunked(grid, recs, end, onDone);
     });
+  } else if (onDone) {
+    onDone();
   }
 }
 
@@ -392,11 +396,41 @@ function reserveHeight(grid, recs, m) {
   grid.style.minHeight = Math.round(rows * m.rowH + (rows - 1) * CARD_GAP) + "px";
 }
 
+/* 被 content-visibility 跳过的卡片按 contain-intrinsic-size 占位，而这个值随列宽变
+   （1280→218.81 / 1440→241.31 / 1920→230.63，都是**内容盒**）。写死会与真实渲染尺寸
+   不一致 → 每行差 1~22px、几十行累计上千像素，占位高度和自然高度对不上。
+   这里取一张**视口内**卡片的实测值覆盖；跳过的卡片报告的是估算值，不能当基准 */
+let cardIntrinsicKey = "";
+
+function syncCardIntrinsic() {
+  let hit = null;
+  for (const c of document.querySelectorAll("#board .card")) {
+    const r = c.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < innerHeight && r.width && r.height) { hit = c; break; }
+  }
+  if (!hit) return;
+  const key = `${hit.clientWidth}x${hit.clientHeight}`;
+  if (key === cardIntrinsicKey) return;
+  cardIntrinsicKey = key;
+  let tag = document.getElementById("cardIntrinsic");
+  if (!tag) {
+    tag = document.createElement("style");
+    tag.id = "cardIntrinsic";
+    document.head.appendChild(tag);
+  }
+  tag.textContent =
+    `.card{contain-intrinsic-size:auto ${hit.clientWidth}px auto ${hit.clientHeight}px}`;
+}
+
 function fillGrid(grid) {
-  if (!grid || grid.dataset.pending !== "1") return;
-  delete grid.dataset.pending;
-  grid.style.minHeight = "";
-  appendCardsChunked(grid, grid.__recs || []);
+  if (!grid || grid.dataset.pending !== "1" || grid.dataset.filling === "1") return;
+  grid.dataset.filling = "1";
+  appendCardsChunked(grid, grid.__recs || [], 0, () => {
+    delete grid.dataset.filling;
+    delete grid.dataset.pending;
+    grid.style.minHeight = "";   // 建完才撤占位：此时自然高度 == 占位高度
+  });
+  syncCardIntrinsic();           // 首片卡片已同步建出，可以量真实尺寸
 }
 
 /* 侧栏宽度 / 窗口尺寸变了 → 列数与行高随之变化，占位要跟着重算（量一次、写一批） */
@@ -421,8 +455,19 @@ function resetGroupObserver() {
   );
 }
 
+/* 同一视图内重渲（重新抓取完成、改名、删除、代理标记到达……）必须**保住滚动位置**：
+   board.innerHTML="" 会把 .board-wrap 的 scrollTop 压到 0，重建后就停在最上面。
+   筛选条件变了（搜索词 / 域名 / 标签）则另当别论——换视图从头看，回顶部 */
+let lastViewKey = null;
+
 function render() {
   const board = $("board");
+  const wrap = document.querySelector(".board-wrap");
+  const prevScroll = wrap ? wrap.scrollTop : 0;
+  const viewKey = [state.filter, state.selectedDomain, state.selectedTag].join(" ");
+  const sameView = viewKey === lastViewKey;
+  lastViewKey = viewKey;
+
   board.innerHTML = "";
   buildSidebar();
 
@@ -505,6 +550,10 @@ function render() {
   if (state.selectedTag === "__untagged__") parts.push("未标签");
   parts.push(`${visible.length} 条显示`);
   setStatus(parts.join("，"));
+
+  /* 回到原滚动位置：此刻所有分组的占位高度都已写好，scrollHeight 是最终值 */
+  if (wrap) wrap.scrollTop = sameView ? prevScroll : 0;
+  syncCardIntrinsic();   // 平铺分支此刻已有卡片；分组分支由 fillGrid 触发
 }
 
 /* ---------- 抓取（添加 / 重新抓取） ---------- */
@@ -1136,9 +1185,12 @@ async function saveDbPath() {
 function init() {
   $("sidebarToggle").addEventListener("click", () => {
     $("sidebar").classList.toggle("collapsed");
-    // 宽度过渡结束后列数才定下来，届时重算未建分组的占位高度
+    // 宽度过渡结束后列数才定下来，届时同步卡片实测尺寸 + 重算占位高度
     clearTimeout(window.__sbReflowTimer);
-    window.__sbReflowTimer = setTimeout(recomputePendingGrids, 240);
+    window.__sbReflowTimer = setTimeout(() => {
+      syncCardIntrinsic();
+      recomputePendingGrids();
+    }, 240);
   });
 
   /* 滚轮落在侧边栏上时转发给右侧看板滚动——侧边栏自身固定不滑动。
@@ -1164,6 +1216,7 @@ function init() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       buildSidebar();
+      syncCardIntrinsic();
       recomputePendingGrids();
     }, 150);
   });

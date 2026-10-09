@@ -175,6 +175,10 @@ main {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr));
   gap: 16px;
+  /* 行高按内容算，不许拉伸去填满容器：按需建卡期间网格带 min-height 占位，
+     默认 align-content(normal→stretch) 会把已建的行拉高（实测 241→573px），
+     卡片变形，且实测值一旦被写进 contain-intrinsic-size，跳过的卡片全跟着畸变 */
+  align-content: start;
 }
 .empty-hint {
   text-align: center; color: var(--faint); font-size: 14px; padding: 80px 0;
@@ -349,9 +353,13 @@ main {
   /* 视口外的卡片跳过布局与绘制。侧栏宽度过渡会让 board 每帧重排，
      没有这条时 855 张卡要重排 7 轮、单帧最长 83ms（明显卡顿）；
      加上后 0 长帧、最大 16.8ms，动画照常。
-     auto <尺寸> = 记住真实渲染尺寸，卡片高度实测恒为 243px，估算不产生位移 */
+     ⚠ 这里是**内容盒**尺寸：加上 1px×2 边框才等于真实卡片的 243.31px。
+     写成 243px 会让跳过的卡片变成 245px，逐行差 1.69px，
+     与占位公式的 243.31 对不上——一次重新抓取能漂移上千像素。
+     写 279/241.31 是 1440 视口的精确值；其它列宽由 app.js 的
+     syncCardIntrinsic() 按实测覆盖（auto 也会记住渲染过的真实尺寸） */
   content-visibility: auto;
-  contain-intrinsic-size: auto 281px auto 243px;
+  contain-intrinsic-size: auto 279px auto 241.31px;
 }
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
 
