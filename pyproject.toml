@@ -34,5 +34,6 @@ namespaces = false
 
 [tool.setuptools.package-data]
 # 静态页面与各自 server.py 同目录，随 wheel/sdist 一起分发
-"xingren.web.webui" = ["*.html", "*.css", "*.js"]
+# js/ 是子目录：package-data 的单个 * 不跨目录分隔符，必须显式写 js/*.js
+"xingren.web.webui" = ["*.html", "*.css", "*.js", "js/*.js"]
 "xingren.web.demo" = ["*.html", "*.css", "*.js"]

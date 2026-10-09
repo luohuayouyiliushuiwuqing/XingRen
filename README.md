@@ -26,8 +26,11 @@ XingRen/
 │   │   └── records.py     # SQLite 存储层
 │   └── web/
 │       ├── webui/         # 主界面：Raindrop 看板（默认 0.0.0.0:4000）
-│       │   ├── server.py  # 静态托管 + REST API
-│       │   └── index.html / style.css / app.js
+│       │   ├── server.py  # 路由分发 + REST API
+│       │   ├── staticfiles.py / imgproxy.py / fsbrowse.py
+│       │   │              # 静态文件解析 / 图片代抓 / 目录浏览（都不碰 socket）
+│       │   ├── index.html / style.css
+│       │   └── js/        # 12 个原生 ES 模块（无构建步骤），入口 main.js
 │       └── demo/          # 独立演示：CSS 选择器试验台（端口 8765）
 │           ├── server.py  # 静态托管 + /api/fetch（输入网址按选择器提取）
 │           └── index.html / style.css / app.js / fixture.html

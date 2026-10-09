@@ -8,6 +8,89 @@
 
 ---
 
+## 2026-10-09 13:54:36 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 拆分 webui 架构——`app.js` 1415 行拆成 12 个原生 ES 模块，`server.py` 440 行拆出三个模块（17 文件，纯搬移、行为零变化）
+
+  **1. 前端：`xingren/web/webui/js/`（无构建步骤，`<script type="module" src="js/main.js">`）**
+
+  | 文件 | 行 | 职责 |
+  | --- | --- | --- |
+  | `state.js` | 68 | 共享地基：`$` `el` `setStatus` `hostOf` `rootDomain` `MIN_GROUP` + 唯一可变 `state`（叶子，无 import） |
+  | `records.js` | 94 | 数据层：加载/合并/筛选可见记录/代理域名/删除 |
+  | `cards.js` | 136 | 卡片 DOM：`createCard` + 就地补丁 `fillCard`/`updateCard` |
+  | `sidebar.js` | 141 | 侧栏 + 「更多」溢出测量 |
+  | `board.js` | 218 | `render()` 与懒建机制（分片、Observer、占位高度、滚动保持） |
+  | `fetch.js` | 51 | `fetchRecord` `addUrl` |
+  | `modals.js` | 94 | 重命名 + 标签弹窗 |
+  | `proxy-panel.js` | 137 | 代理映射面板 **+ 域名管理弹窗**（唯一开启方在代理面板内） |
+  | `detail.js` | 79 | 详情弹层 |
+  | `io.js` | 190 | 两阶段导入 + 导出 |
+  | `storage.js` | 111 | 存储目录面板 + 目录点选 |
+  | `main.js` | 170 | `init()` 绑定 + `window.XR` 调试句柄（不被任何模块 import） |
+
+  三处边界**与原分节横幅不同**，理由是按调用图而非按注释分组：`render` 归 `board.js`（它的
+  函数体六成是栅格/懒建编排，单拆只会多一层无收益的中间层）；原 A 段一拆三（数据进 `records.js`、
+  通用原语 `el()` 进 `state.js`、只有建卡的进 `cards.js`）；`openDomain` 并入 `proxy-panel.js`
+  （全文件唯一调用点在 `renderProxyPanel` 里）。
+
+  **2. 循环导入规则**（写入 `CLAUDE.md`，并给出复核命令）：7 个模块构成一个强连通分量
+  （`board⇄sidebar`、`board⇄cards`、`fetch⇄detail` 等），安全前提是
+  ① 跨模块绑定都是顶层 `function` 声明；② 只在运行时调用、**模块体求值阶段零调用**。
+  `grep -nE '^[A-Za-z_$]' js/*.js` 的命中只能是 `import`/`export`/`function`/`const`/`let`
+  （外加 `main.js` 的 DOMContentLoaded 注册与 `window.XR` 两行）。明确**不做的**三处拆环
+  （`fetch⇄detail` 加回调、`loadRecords` 的 `render()` 下放、事件总线）都会改变行为，纯为消循环不值。
+
+  **3. 服务端：`server.py` 440 → 336 行**，拆出三个不碰 socket 的模块：
+  `staticfiles.py`(43) 静态解析、`imgproxy.py`(95) 图片代抓（超时/降级/负缓存 + `handle_img`
+  函数体，签名 `(status, body, ctype)`）、`fsbrowse.py`(28) 目录浏览。
+  `_effective_proxy` 降级为模块级 **`effective_proxy()`** 留在 `server.py`——这样
+  `server ⇄ imgproxy` 不构成循环 import；Handler 只留路由、JSON 收发与写响应。
+
+  **4. 静态路由：`STATIC_FILES` 白名单 → `resolve_static()`**（参照 `demo/server.py:72` 的先例）：
+  放行 `/`、`/index.html`、顶层 html/css/js、以及白名单目录 `js/` 下一层；
+  拒绝裸 `..`、`\`、深度 >2、空/`.`/`..` 段、未知后缀、`is_file()` 不存在、符号链接逃逸；
+  **不做 percent-decode**（`/js/%2e%2e/server.py` 既不撞字面判断、磁盘上也无此文件名 → 404）。
+  **`/app.js` 现在 404**（文件已删、全仓只有 `index.html` 引它且已改），不做兼容路由。
+
+  **5. 配套**：`pyproject.toml` package-data 补 `"js/*.js"`（单个 `*` 不跨目录分隔符，
+  **必须与 `js/` 首次出现同批**，否则 wheel 里没文件）；`index.html` 换 `type="module"`；
+  `README.md` 目录树、`CLAUDE.md` 架构图与 Frontend 段（含模块表 + 循环规则）、
+  `style.css` 注释里的 `app.js` → `js/board.js` 同步。
+
+  **6. 验收**（临时套件在 `/tmp/xr`，隔离 `XINGREN_DATA_DIR`，203 条确定性数据）
+  - **阶段 0 基线**：拆前先跑一遍留 golden，之后每阶段 diff —— 侧栏 25 行、21 个分组、
+    20 卡 / 19 pending、API 摘要全程一致
+  - **静态矩阵 21 项全过**：12 个 `/js/*.js` 均 200 + `text/javascript` + `no-store`；
+    `/app.js`、`/server.py`、`/js/../server.py`、`/js/%2e%2e/server.py`、`/js/`、
+    `/js/a/b.js`、`/foo/bar.js`、`/x.css` 全 404
+  - **Node 模块图**：11 个模块（`main.js` 顶层碰 `document` 除外）逐个
+    `await import(...)` —— 解析 import 路径、命名导出、执行模块体全过
+  - **API 等价性**：`git show HEAD:server.py` 换回旧代码、**两侧各自 reset 后**打 29 条接口，
+    **状态码与响应体逐字节一致**（易变的 `/api/proxy-detect` 值已归一）
+  - **浏览器回归 18/18**：侧栏「更多」溢出/展开/收起、懒建占位（滚动高度差 -11px，在容差内）、
+    删除触发重绘且滚动保持、筛选归零、**单条就地补丁（#board 子节点变更 0 次）**、
+    六个弹窗、导出 txt/html、**两阶段导入（quick 先于任何 fetch、10 条 `fetched=false` 落库、
+    提取期间 0 整页重绘）**、`/api/img` 三组、0 页面错误、0 个 5xx
+  - **wheel 打包**：`pip wheel` 后 wheel 内含 12 个 `js/*.js` + 4 个 py + html/css
+
+  **7. 踩的坑（记下来免得再犯）**
+  1. **`$` 不能加 `\b`**：切分脚本用 `\b\$\b` 匹配符号，而 `$` 不是单词字符，
+     边界永不成立 → **一个 `$` 的 import 都没生成**，页面加载即 `$ is not defined`。
+     修法：符号首尾非单词字符时该侧不加 `\b`（`sym_re()`）。
+  2. **删文件后打包必须先 `rm -rf build`**：setuptools 不清理 `build/lib`，
+     已从工作区删除的 `app.js` 作为旧产物被原样打进 wheel。
+  3. **两个既有问题（非本次引入，未修）**：① 状态栏文案有竞态——`loadRecords()` 收尾的
+     `setStatus("共 N 条")` 与 `loadProxyDomains()` 收尾的 `render()` 互相覆盖，
+     同一份代码连跑三次会出两种结果（golden 因此忽略该字段）；
+     ② 服务器未实现 `do_HEAD`，`curl -I` 拿到 501（浏览器只用 GET，无实际影响）。
+
+  ⚠ **改了 `server.py` 必须重启服务**；**控制台函数不再挂 `window`**，
+  排查用 `window.XR`（含 `state` `render` `loadRecords` `updateCard` `fetchRecord` 等）。
+  JS/CSS 是按请求读的，刷新即生效。
+
 ## 2026-10-09 13:02:15 +0800
 
 - **用户**: haijie yin

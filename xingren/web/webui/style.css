@@ -356,7 +356,7 @@ main {
      ⚠ 这里是**内容盒**尺寸：加上 1px×2 边框才等于真实卡片的 243.31px。
      写成 243px 会让跳过的卡片变成 245px，逐行差 1.69px，
      与占位公式的 243.31 对不上——一次重新抓取能漂移上千像素。
-     写 279/241.31 是 1440 视口的精确值；其它列宽由 app.js 的
+     写 279/241.31 是 1440 视口的精确值；其它列宽由 js/board.js 的
      syncCardIntrinsic() 按实测覆盖（auto 也会记住渲染过的真实尺寸） */
   content-visibility: auto;
   contain-intrinsic-size: auto 279px auto 241.31px;

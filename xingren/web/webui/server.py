@@ -7,59 +7,38 @@
 """
 
 import json
-import os
 import sys
-import time
-from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from curl_cffi.requests import get as http_get
-
-from xingren.core.fetcher import _is_domestic, get_metadata
+from xingren.core.fetcher import get_metadata
 from xingren.core.proxy import detect_proxy
 from xingren.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
-    get_cache_dir, get_domain_need_proxy, get_storage_paths, insert_quick_records,
+    get_domain_need_proxy, get_storage_paths, insert_quick_records,
     list_domains, list_proxy_domains, list_proxy_rules, list_records, list_tags,
     match_proxy_rule, remove_tag_from_record, set_storage_dir, set_title, update_domain,
     upsert_proxy_rule, upsert_record,
 )
+from xingren.web.webui import fsbrowse, imgproxy
+from xingren.web.webui.staticfiles import CONTENT_TYPES, resolve_static
 
-ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
+def effective_proxy(url: str, global_proxy: str) -> str | None:
+    """代理优先级：URL 模式规则 > 域名规则 > 全局代理默认值。
 
-CONTENT_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-}
-STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/style.css": "style.css", "/app.js": "app.js"}
+    映射只表达「要不要走代理」，实际地址统一取 global_proxy。
+    规则命中即为强制值——need_proxy=0 表示强制直连，不再向下兜底。
 
-# 图片代抓：单次尝试秒数（代理挂起时要快点认输，直连给慢 CDN 留余量）+
-# 失败负缓存 TTL——浏览器每次 render 都会重建 <img>，没有负缓存的话
-# 一张挂掉的图会反复拖住工作线程（实测一次 5~10s）
-IMG_TIMEOUT_PROXY = 5
-IMG_TIMEOUT = 8
-IMG_FAIL_TTL = 60
-_IMG_FAIL: dict[str, tuple[float, int, bytes, str]] = {}  # digest -> (失效时刻, status, body, ctype)
-
-
-def _img_try(src: str, proxy: str | None) -> tuple[int, bytes, str]:
-    """一次图片请求，返回 (status, body, content-type)；失败抛异常交给调用方降级。"""
-    resp = http_get(src, proxy=proxy, timeout=IMG_TIMEOUT_PROXY if proxy else IMG_TIMEOUT)
-    body = resp.content
-    ctype = (resp.headers.get("content-type") or "application/octet-stream").split(";")[0]
-    status = resp.status_code if 100 <= (resp.status_code or 0) < 600 else 502
-    return status, body, ctype
-
-
-def _remember_img_fail(digest: str, status: int, body: bytes, ctype: str) -> None:
-    if len(_IMG_FAIL) > 400:  # 顺手清掉过期的，别无限涨
-        now = time.monotonic()
-        for k in [k for k, v in _IMG_FAIL.items() if v[0] <= now]:
-            del _IMG_FAIL[k]
-    _IMG_FAIL[digest] = (time.monotonic() + IMG_FAIL_TTL, status, body[:8192], ctype)
+    放在模块级而不是 Handler 方法上：`imgproxy` 也要用同一套判定，
+    而它不能 import 本模块（会循环）——由 Handler 解析好再传进去。
+    """
+    hit, need = match_proxy_rule(url)
+    if hit:
+        return (global_proxy or None) if need else None
+    domain_need = get_domain_need_proxy(url)
+    if domain_need is not None:
+        return (global_proxy or None) if domain_need else None
+    return global_proxy or None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,20 +74,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, 500)
             except Exception:
                 pass
-
-    def _effective_proxy(self, url: str, global_proxy: str) -> str | None:
-        """代理优先级：URL 模式规则 > 域名规则 > 全局代理默认值。
-
-        映射只表达「要不要走代理」，实际地址统一取 global_proxy。
-        规则命中即为强制值——need_proxy=0 表示强制直连，不再向下兜底。
-        """
-        hit, need = match_proxy_rule(url)
-        if hit:
-            return (global_proxy or None) if need else None
-        domain_need = get_domain_need_proxy(url)
-        if domain_need is not None:
-            return (global_proxy or None) if domain_need else None
-        return global_proxy or None
 
     def do_GET(self) -> None:
         self._safe(self._do_GET)
@@ -150,16 +115,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(get_storage_paths())
             return
         if path == "/api/fs/list":
-            self._send_json(self._fs_list((qs.get("path") or [""])[0]))
+            self._send_json(fsbrowse.fs_list((qs.get("path") or [""])[0]))
             return
         if path == "/api/img":
             self.handle_img(qs)
             return
-        name = STATIC_FILES.get(path)
-        if name is None:
+        file_path = resolve_static(path)
+        if file_path is None:
             self.send_error(404)
             return
-        file_path = ROOT / name
         body = file_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", CONTENT_TYPES[file_path.suffix])
@@ -182,63 +146,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_img(self, qs: dict) -> None:
-        """服务端代抓图片（代理优先、失败回退直连），结果落本地缓存。"""
+        """服务端代抓图片：解析代理 → 交给 imgproxy 取字节 → 写响应。"""
         src = (qs.get("src") or [""])[0]
         global_proxy = (qs.get("proxy") or [""])[0].strip() or ""
         if not src.startswith(("http://", "https://")):
             self.send_error(400)
             return
-
-        digest = sha256(src.encode("utf-8")).hexdigest()[:32]
-        cache_dir = get_cache_dir()  # 跟随存储目录，切换后自动指向新位置
-        bin_path = cache_dir / f"{digest}.bin"
-        ct_path = cache_dir / f"{digest}.ct"
-
-        # 命中本地缓存：直接返回，不走网络
-        if bin_path.is_file() and ct_path.is_file():
-            self._send_img(bin_path.read_bytes(), ct_path.read_text(encoding="utf-8").strip())
-            return
-
-        # 负缓存：短时间内失败过的直接回，不让线程再干等一次超时
-        # （每次 render 都会重建 <img>，没有这层的话每张挂掉的图都要再拖 5s）
-        now = time.monotonic()
-        failed = _IMG_FAIL.get(digest)
-        if failed and failed[0] > now:
-            self._send_img(failed[2], failed[3], failed[1])
-            return
-
-        proxy = self._effective_proxy(src, global_proxy)
-        if proxy and _is_domestic(src):
-            proxy = None
-
-        status, body, ctype = 502, b"", "text/plain"
-        if proxy:
-            try:
-                status, body, ctype = _img_try(src, proxy)
-            except Exception:
-                status = 502   # 代理挂起（实测会 hang 满超时）→ 下面试直连
-            if not (200 <= status < 300):
-                # 异常或代理吐了错误页，都再给直连一次机会；
-                # 直连也失败就保留代理那次结果（不覆盖成更差的 502）
-                try:
-                    status, body, ctype = _img_try(src, None)
-                except Exception:
-                    pass
-        else:
-            try:
-                status, body, ctype = _img_try(src, None)
-            except Exception:
-                pass
-
-        # 只缓存成功的图片（4xx/5xx 不落盘，避免把错误页缓存住）
-        if 200 <= status < 300 and body:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            bin_path.write_bytes(body)
-            ct_path.write_text(ctype, encoding="utf-8")
-            _IMG_FAIL.pop(digest, None)
-        else:
-            _remember_img_fail(digest, status, body, ctype)
-
+        proxy = effective_proxy(src, global_proxy)
+        status, body, ctype = imgproxy.handle_img(src, proxy)
         self._send_img(body, ctype, status)
 
     # ---------- 业务 ----------
@@ -253,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             if not url.startswith(("http://", "https://")):
                 self._send_json({"ok": False, "error": "网址必须以 http:// 或 https:// 开头"}, 400)
                 return
-            proxy = self._effective_proxy(url, global_proxy)
+            proxy = effective_proxy(url, global_proxy)
             meta = get_metadata(url, proxy=proxy)
             merged = upsert_record(meta)
             self._send_json({"ok": True, "record": merged})
@@ -313,25 +228,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.send_error(404)
-
-    def _fs_list(self, raw: str) -> dict:
-        """目录浏览：空 path 返回顶层（Windows 列盘符，POSIX 列根目录）。"""
-        if not raw:
-            if os.name == "nt":
-                roots = [f"{c}:\\" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if Path(f"{c}:\\").exists()]
-            else:
-                roots = ["/"]
-            return {"ok": True, "path": "", "parent": "", "entries": roots}
-        p = Path(raw).expanduser()
-        try:
-            p = p.resolve()
-            if p.is_file():
-                p = p.parent
-            entries = sorted((d.name for d in p.iterdir() if d.is_dir()), key=str.lower)
-        except OSError as exc:
-            return {"ok": False, "error": f"无法读取目录：{exc}"}
-        parent = str(p.parent) if p.parent != p else ""
-        return {"ok": True, "path": str(p), "parent": parent, "entries": entries[:500]}
 
     def _do_PATCH(self) -> None:
         path = urlparse(self.path).path
