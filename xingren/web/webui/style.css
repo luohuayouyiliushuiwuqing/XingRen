@@ -22,7 +22,11 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
+  /* 必须封顶成视口高：只有 min-height 的话，卡片一多 body 会被内容撑到几千像素，
+     main / .board-wrap / .sidebar 随之失去高度约束 —— .board-wrap 不再滚动（退化成
+     整页滚动）、侧栏高度无界测不出溢出。封顶后 main 固定一屏，
+     .board-wrap 与 .sidebar 才是各自的滚动容器 */
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -82,9 +86,12 @@ main {
   padding-bottom: 55px;  /* 让位给 fixed 状态栏（16 + 39） */
   background: var(--panel);
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  position: relative;     /* 条目 offsetTop 以侧栏为原点，供「更多」切分测量 */
+  overflow-y: hidden;     /* 默认固定：滚轮由 JS 转发给看板，侧栏自己不滚 */
   transition: width .2s ease, padding .2s ease;
 }
+/* 「更多」点开后内容超出一屏，才允许侧栏用自身滚动条 */
+.sidebar.expanded { overflow-y: auto; }
 .sidebar.collapsed {
   width: 0;
   padding: 16px 0;
@@ -133,6 +140,24 @@ main {
   padding: 1px 6px;
   flex: none;
 }
+/* 「更多 / 收起」：侧栏装不下的条目收在这里。
+   高度必须与 .sidebar-item 一致（5+5 padding + 1+1 border + 13*1.6 行高 = 33px），
+   因为测量是按 sidebar-item 的 offsetHeight 预留这一行的；也不带外边距，
+   否则会多占一截、压到状态栏让位区里 */
+.sidebar-more {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  transition: background .1s, border-color .1s, color .1s;
+}
+.sidebar-more:hover { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
+.sidebar-more .arrow { font-size: 10px; color: var(--faint); flex: none; }
+.sidebar-more:hover .arrow { color: var(--accent); }
 .board-wrap {
   flex: 1;
   padding: 24px;

@@ -9,6 +9,7 @@ const state = {
   filter: "",
   selectedDomain: null,    // null = "全部"，字符串 = 选中的域名 / "__other__"（零散域名合并项）
   selectedTag: null,       // null = "全部"，字符串 = 选中的标签
+  sidebarExpanded: false,  // 侧栏超出部分是否已通过「更多」展开
   globalProxy: "http://127.0.0.1:7897",  // 全局代理，在「代理」面板里编辑
   proxyDomains: new Set(), // 最终会走代理的域名（侧边栏标记用）
   renameTarget: null,
@@ -177,7 +178,9 @@ function createCard(record) {
 
 function buildSidebar() {
   const sb = $("sidebar");
+  const keepScroll = sb.scrollTop;   // 展开态重绘（如代理标记到达）不丢滚动位置
   sb.innerHTML = "";
+  sb.classList.remove("expanded");   // 先按未展开测量，避免滚动条宽度干扰
 
   const allActive = state.selectedDomain === null && state.selectedTag === null;
   const all = el("div", "sidebar-item" + (allActive ? " active" : ""));
@@ -263,6 +266,49 @@ function buildSidebar() {
     item.addEventListener("click", () => { state.selectedTag = active ? null : "__untagged__"; render(); });
     sb.appendChild(item);
   }
+
+  applySidebarOverflow(sb);
+  if (sb.classList.contains("expanded")) sb.scrollTop = keepScroll;
+}
+
+/* 侧栏固定高度、不随滚轮滚动：装不下的条目收进底部「更多」，点开才整列展开。
+   展开态改用侧栏自身滚动条（overflow-y: auto），滚轮此时作用于侧栏。
+   高度用 offsetTop 实测——它相对定位后的侧栏 padding 盒，已含各元素外边距。 */
+let sidebarOverflowTop = 0;   // 首个被收起条目的位置，展开后滚到这里
+
+function applySidebarOverflow(sb) {
+  const kids = [...sb.children];
+  if (!kids.length) return;
+
+  const cs = getComputedStyle(sb);
+  const padBottom = parseFloat(cs.paddingBottom) || 0;
+  const probe = sb.querySelector(".sidebar-item");
+  const rowH = probe ? probe.offsetHeight : 33;
+  // 内容区底边（相对侧栏 border 盒），再减一行留给「更多」
+  const limit = Math.max(sb.clientHeight - padBottom - rowH, 0);
+
+  let split = kids.length;
+  for (let i = 0; i < kids.length; i++) {
+    if (kids[i].offsetTop + kids[i].offsetHeight > limit) { split = i; break; }
+  }
+  if (split >= kids.length) return;            // 装得下，无需「更多」
+  sidebarOverflowTop = kids[split].offsetTop;
+
+  const more = el("div", "sidebar-more");
+  if (state.sidebarExpanded) {
+    sb.classList.add("expanded");
+    more.innerHTML = `<span>收起</span><span class="arrow">▴</span>`;
+    more.addEventListener("click", () => { state.sidebarExpanded = false; buildSidebar(); });
+  } else {
+    for (let i = split; i < kids.length; i++) kids[i].hidden = true;
+    more.innerHTML = `<span>更多 (${kids.length - split})</span><span class="arrow">▾</span>`;
+    more.addEventListener("click", () => {
+      state.sidebarExpanded = true;
+      buildSidebar();
+      sb.scrollTop = sidebarOverflowTop;   // 直接落在刚展开的位置
+    });
+  }
+  sb.appendChild(more);
 }
 
 /* ---------- 当前可见记录（搜索 + 域名 + 标签过滤，render 与导出共用） ---------- */
@@ -1024,19 +1070,27 @@ function init() {
   });
 
   /* 滚轮落在侧边栏上时转发给右侧看板滚动——侧边栏自身固定不滑动。
-     用 document 捕获阶段监听：先于一切默认滚动行为执行，防止被子元素/缓存旧码干扰 */
+     用 document 捕获阶段监听：先于一切默认滚动行为执行，防止被子元素干扰。
+     「更多」展开后侧栏自己能滚（内容已超出一屏），此时不拦截，交还原生滚动。 */
   document.addEventListener(
     "wheel",
     (e) => {
       const sb = $("sidebar");
       if (!sb || sb.classList.contains("collapsed") || !sb.contains(e.target)) return;
+      if (state.sidebarExpanded) return;   // 展开态：滚轮交给侧栏
       e.preventDefault();
       const wrap = document.querySelector(".board-wrap");
       if (wrap) wrap.scrollTop += e.deltaY;
     },
     { capture: true, passive: false }
   );
-  console.info("[sidebar-fixed] wheel handler v2 active");
+
+  /* 窗口高度变了 → 重新测量侧栏可见条目（否则缩小后底部条目被裁掉且没有「更多」） */
+  let sbResizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(sbResizeTimer);
+    sbResizeTimer = setTimeout(buildSidebar, 150);
+  });
 
   $("addBtn").addEventListener("click", addUrl);
   $("urlInput").addEventListener("keydown", (e) => {

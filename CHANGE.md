@@ -8,6 +8,113 @@
 
 ---
 
+## 2026-10-09 09:42:44 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 向 `_tmp` 存储目录注入 480 条测试数据（按约定保留、不删除），用于在本机看到侧栏「更多」与大列表表现（数据操作，无代码改动）
+
+  **背景**：上一批的侧栏「更多」在本机只有 14 个域名时触发不了（常规窗口下 7 行装得下），
+  用户明确授权「允许向 `_tmp` 数据内注入测试数据，允许不删除」。
+
+  - 脚本 `/tmp/seed_test_data.py`（一次性，未入库），走项目自己的
+    `insert_quick_records`（单事务，0.01s）写入 `config.json` 指向的 `_tmp/metadata.db`
+  - **30 个大站 `siteNN.test` × 12 条 = 360**（侧栏独立分组），
+    **60 个小站 `miniNN.test` × 2 条 = 120**（全部落进「其他」）；
+    域名后缀用 RFC 2606 保留的 `.test`，永不解析
+  - 全部打标签 **`测试数据`（480）**，大站再分半打 `测试A` / `测试B`（各 180）——
+    日后要清掉时按标签一条 SQL 即可
+  - 注入后 `UPDATE records SET fetched=1`（480 行）：详情弹层直接显示空状态，
+    **不会**对这些假域名发起真实抓取
+  - 缩略图复用库里已有真实 URL → 图片代理命中本地缓存，零网络请求
+  - 顺带验证域名设置链路：`site03.test` / `site07.test` 置 `need_proxy=1`（侧栏出「代理」徽标）、
+    `site05.test` 置别名「测试别名站」
+  - **幂等**：URL 是主键，复跑 `{'inserted': 0, 'skipped': 480}`
+
+  验收（playwright 实测）：库内 records **855**（375 真实 + 480 测试）、domains **104**、
+  `fetched=0` **0 行**、record_tags 840；侧栏 41 行、**`更多 (21)`** 正常出现、
+  展开后 `收起 ▴` 可滚；徽标 `site03.test` / `site07.test` / `其他` 均出；
+  标签 `测试数据 480`、`测试A 180`、`测试B 180` 可筛；看板分组
+  `bilibili.com / youtube.com / 其他 / site01.test …`；打开测试记录详情
+  **`.test` 网络请求 0 条**、状态点绿；页面 0 报错 0 请求失败。
+
+## 2026-10-09 09:35:57 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 侧栏固定不随滚轮滚动，装不下的条目收进「更多」按需展开；顺带修掉 body 无高度上限导致的整页滚动（`app.js` / `style.css`，2 文件）
+
+  **1. 布局根因（不修这个，「更多」根本测不出溢出）**
+
+  - 实测 `body` 只有 `min-height: 100vh`，卡片一多 body 被内容撑到 **24890px**：
+    `main` / `.board-wrap` / `.sidebar` 全部等高，`.board-wrap.scrollHeight === clientHeight`
+    （**不是滚动容器**），整页靠文档滚动；此前「滚轮转发给看板」实际是
+    `wrap.scrollTop += deltaY` 加在一个不滚动的元素上，空转
+  - `style.css`：`body { min-height: 100vh → height: 100vh }` 封顶一屏。
+    改后实测 body/html = 800、main = 737、`.board-wrap` 737 vs 24890（可滚）、
+    侧栏 737、文档不再滚动；滚到底最后一张卡片底边 737 ≤ 状态栏顶 761（让位 padding 仍有效）
+
+  **2. 侧栏「更多」收缩（`app.js` + `style.css`）**
+
+  - `state.sidebarExpanded` + `applySidebarOverflow(sb)`：按 `offsetTop` 实测切分
+    （先 `position: relative` 让 `offsetTop` 以侧栏为原点，含各元素外边距），
+    装不下的条目 `hidden`，末尾补一行「更多 (N)」；预留高度 = `.sidebar-item` 的
+    `offsetHeight`，`.sidebar-more` 用 5px padding + 1px border 凑到同为 33px，
+    不带外边距——否则会压进状态栏让位区
+  - 默认 `.sidebar { overflow-y: hidden }` + **滚轮被拦截并转发给看板**（侧栏纹丝不动）；
+    点「更多」→ `expanded` 类 → `overflow-y: auto`，此时滚轮**不再拦截**、
+    交还原生滚动（内容已超出一屏，用户主动点开才允许滚），并直接滚到首个被收起条目
+  - 末尾按钮变「收起 ▴」；`buildSidebar` 开头保留 `scrollTop`，重渲（如
+    `loadProxyDomains` 回来）不丢展开态滚动位置；窗口 resize 后 150ms 重测一次，
+    否则缩小窗口底部条目被裁掉却没有「更多」
+  - 顺带删掉 `app.js` 里排查用的 `console.info("[sidebar-fixed] wheel handler v2 active")`
+
+  **3. 验收（playwright + chromium 实测）**
+
+  - 收起态滚轮：`defaultPrevented=true`，看板 scrollTop 0→300，侧栏恒为 0
+  - 展开态滚轮：`defaultPrevented=false`，`overflow-y: auto`；展开后 scrollTop=48（落点），
+    `buildSidebar()` 重渲后 40→40 保留
+  - 360px 窗口真实数据：`更多 (2)`、hidden 2、可见行底 282 ≤ 内容底 305，
+    无一行越过状态栏顶 321；「更多」行高 33 == 条目行高 33
+  - 注入 88 项模拟长列表：`更多 (69)`，展开后 2969 > 737 可滚、「收起」在末尾
+  - 冒烟：域名筛选 227 卡、分组折叠/展开、详情弹层、代理面板、存储面板
+    （显示 `_tmp`），**0 页面错误 / 0 请求失败**；JS 语法通过
+
+## 2026-10-09 09:20:33 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: README 对齐当前实现——补全 API 表、修正过时的代理与数据文件描述（`README.md`，1 文件）
+
+  **1. API 表补全（9 行 → 21 行，覆盖 `server.py` 全部 17 个路径）**
+
+  - 新增：`POST /api/records/quick`（快照批量入库）、`GET/PATCH /api/domain`、
+    `GET /api/tags`、`POST/DELETE /api/tag`、`POST/DELETE /api/record/tag`、
+    `GET /api/proxy-rules`、`POST/DELETE /api/proxy-rule`、`GET /api/proxy-domains`、
+    `GET、POST /api/proxy-detect`
+  - 表头加一句「全部接口无鉴权」，与文末风险条目呼应
+
+  **2. 修正过时描述**
+
+  - 代理：`默认 7892` → `默认 http://127.0.0.1:7897`（对齐 `app.js` `state.globalProxy`），
+    补「打开页面自动探测 7889-7899」；补优先级
+    **URL 模式规则 > 域名规则 > 全局默认**（命中即强制值，含强制直连）与「国内域名自动跳过代理」
+  - 「代理框」已从工具栏移除 → 改写为「代理」面板的用法；同时补上左侧栏筛选、
+    卡片两处操作位置（右上 详情/重新抓取，底部 重命名/标签/删除）、导入导出、存储面板
+  - 数据文件：图片缓存写死 `cache/` → `cache/img/`（对齐 `get_cache_dir()`），
+    并注明 `config.json` 也已 gitignore
+  - 无鉴权条目：补 `GET /api/fs/list` 可列服务器任意目录、
+    `POST /api/storage-dir` 可搬动/重建数据库两项新面，并链到 TODO.md 第 2 项
+
+  **3. 配套**
+
+  - 功能列表补：导入/导出（HTML 快照 5000 条秒级入库）、域名分组与代理映射、图片本地缓存
+  - 目录结构补 `config.json`；`CLAUDE.md` 标注「约定不入库」
+
+  验证：表内每条路径与 `server.py` 路由一一比对无遗漏；`默认 7897`、
+  `get_cache_dir()` 返回 `DATA_DIR/cache/img`、`exportTxt`/`exportHtml` 取
+  `getVisibleRecords()`、`detectProxy({fill:true})` 挂在 `init()` 等声明均回读源码确认。
+
 ## 2026-10-08 21:54:18 +0800
 
 - **用户**: XiaoWin
