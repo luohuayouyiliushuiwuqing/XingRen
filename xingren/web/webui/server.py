@@ -17,8 +17,8 @@ from xingren.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
     get_domain_need_proxy, get_storage_paths, insert_quick_records,
     list_domains, list_proxy_domains, list_proxy_rules, list_records, list_tags,
-    match_proxy_rule, remove_tag_from_record, set_storage_dir, set_title, update_domain,
-    upsert_proxy_rule, upsert_record,
+    match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
+    set_storage_dir, set_title, update_domain, upsert_proxy_rule, upsert_record,
 )
 from xingren.web.webui import fsbrowse, imgproxy
 from xingren.web.webui.staticfiles import CONTENT_TYPES, resolve_static
@@ -227,6 +227,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, **result, "records": len(list_records())})
             return
 
+        if path == "/api/domain/replace":
+            # 域名重置：原域名（含子域名）整体替换为新域名，事务内一次改完
+            try:
+                result = replace_domain(data.get("old") or "", data.get("new") or "")
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            self._send_json({"ok": True, **result})
+            return
+
         self.send_error(404)
 
     def _do_PATCH(self) -> None:
@@ -299,6 +309,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "规则不存在"}, 404)
                 return
             self._send_json({"ok": True})
+            return
+
+        if path == "/api/storage-history":
+            # 从历史里移除一条目录记录（当前目录由后端强制置顶，删不掉）
+            removed = (qs.get("path") or [""])[0]
+            self._send_json({"ok": True, "history": remove_storage_history(removed)})
             return
 
         self.send_error(404)

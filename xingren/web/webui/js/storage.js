@@ -11,6 +11,48 @@ function fsJoin(dir, name) {
   return /[\\\/]$/.test(dir) ? dir + name : dir + sep + name;
 }
 
+/* ---------- 历史位置：点击直接切换（省去重新浏览选目录） ---------- */
+
+function renderHistory(history) {
+  const box = $("dbHistory");
+  box.innerHTML = "";
+  if (!history || !history.length) {
+    box.appendChild(el("div", "fs-empty", "暂无历史记录"));
+    return;
+  }
+  for (const p of history) {
+    const isCurrent = p === fsState.storage;
+    const row = el("div", "db-hist-row" + (isCurrent ? " current" : ""));
+    const btn = el("button", "db-hist-item", p);
+    btn.title = isCurrent ? `${p}（当前）` : `${p}（点击切换到此目录）`;
+    if (isCurrent) {
+      btn.disabled = true;
+      row.appendChild(btn);
+      row.appendChild(el("span", "db-hist-cur", "当前"));
+    } else {
+      btn.addEventListener("click", async () => {
+        $("dbPathInput").value = p;   // 填入再走统一保存流程（迁移、刷新记录、状态提示都在里面）
+        await saveDbPath();
+      });
+      row.appendChild(btn);
+      const del = el("button", "db-hist-del", "移除");
+      del.title = "从历史中移除这个路径";
+      del.addEventListener("click", async () => {
+        try {
+          const d = await (
+            await fetch("/api/storage-history?path=" + encodeURIComponent(p), { method: "DELETE" })
+          ).json();
+          if (d.ok) renderHistory(d.history);
+        } catch (e) {
+          setStatus("移除历史失败：" + e.message, "err");
+        }
+      });
+      row.appendChild(del);
+    }
+    box.appendChild(row);
+  }
+}
+
 export async function openDbPanel() {
   $("dbMask").hidden = false;
   $("fsPicker").hidden = true;
@@ -29,6 +71,7 @@ export async function openDbPanel() {
     } else {
       $("dbCurrent").classList.remove("missing");
     }
+    renderHistory(d.history || []);
   } catch (e) {
     $("dbCurrent").textContent = "读取失败：" + e.message;
   }
@@ -91,6 +134,7 @@ export async function saveDbPath() {
     fsState.storage = data.path;
     $("dbCurrent").textContent =
       `目录: ${data.path}\n数据库: ${data.db_path}\n图片缓存: ${data.cache_dir}`;
+    renderHistory(data.history || []);   // 新目录已进历史，列表跟着刷新
     $("dbPathInput").value = "";
     $("fsPicker").hidden = true;
     await loadRecords(); // 从新存储目录重新加载

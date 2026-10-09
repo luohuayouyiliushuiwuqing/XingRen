@@ -1,13 +1,15 @@
 /* 代理映射面板 + 域名管理弹窗（它唯一的开启方）。 */
 import { render } from "./board.js";
-import { loadProxyDomains } from "./records.js";
+import { loadProxyDomains, loadRecords } from "./records.js";
 import { $, el, setStatus, state } from "./state.js";
 
 /* ---------- 域名管理 ---------- */
 
-function openDomain(domainName) {
+export function openDomain(domainName) {
   state.domainTarget = domainName;
   $("domainTitle").textContent = `域名管理：${domainName}`;
+  $("domainResetOld").textContent = domainName;
+  $("domainResetInput").value = "";
   // 从 API 获取域名信息
   fetch("/api/domains").then(r => r.json()).then(data => {
     const domain = (data.domains || []).find(d => d.name === domainName);
@@ -16,6 +18,38 @@ function openDomain(domainName) {
     $("domainNeedSelect").value = np === null || np === undefined ? "" : (np ? "1" : "0");
   });
   $("domainMask").hidden = false;
+}
+
+/* 域名重置：原域名（含子域名）在库里的全部引用整体换成新域名 */
+export async function resetDomain() {
+  const old = state.domainTarget;
+  const next = $("domainResetInput").value.trim();
+  if (!old) return;
+  if (!next) { setStatus("请填写新域名", "err"); $("domainResetInput").focus(); return; }
+  const hint = `确定把 ${old} 全部替换为 ${next}？\n记录链接、封面、域名规则与代理规则都会改写，不可撤销。`;
+  if (!confirm(hint)) return;
+  try {
+    const resp = await fetch("/api/domain/replace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old, new: next }),
+    });
+    const data = await resp.json();
+    if (!data.ok) { setStatus("域名重置失败：" + data.error, "err"); return; }
+    $("domainMask").hidden = true;
+    state.domainTarget = null;
+    if (state.selectedDomain === old) state.selectedDomain = null;
+    // 都要 await：两者的 render() 都会重写状态栏，提示必须放在最后
+    await loadRecords();
+    await loadProxyDomains();
+    setStatus(
+      `已将 ${data.old} 替换为 ${data.new}：更新 ${data.records} 条` +
+      (data.merged ? `，合并 ${data.merged} 条` : "") +
+      (data.rules ? `，改写规则 ${data.rules} 条` : "")
+    );
+  } catch (e) {
+    setStatus("域名重置失败：" + e.message, "err");
+  }
 }
 
 export async function saveDomain() {

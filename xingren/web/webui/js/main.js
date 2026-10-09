@@ -8,7 +8,7 @@ import { closeDetail } from "./detail.js";
 import { addUrl, fetchRecord } from "./fetch.js";
 import { doExport, importFromFile } from "./io.js";
 import { addNewTag, submitRename } from "./modals.js";
-import { addRule, detectProxy, openProxyPanel, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
+import { addRule, detectProxy, openProxyPanel, resetDomain, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
 import { getVisibleRecords, loadProxyDomains, loadRecords } from "./records.js";
 import { buildSidebar } from "./sidebar.js";
 import { $, setStatus, state } from "./state.js";
@@ -102,6 +102,10 @@ function init() {
   });
 
   $("domainSave").addEventListener("click", saveDomain);
+  $("domainResetBtn").addEventListener("click", resetDomain);
+  $("domainResetInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") resetDomain();
+  });
   $("domainCancel").addEventListener("click", () => {
     $("domainMask").hidden = true;
     state.domainTarget = null;

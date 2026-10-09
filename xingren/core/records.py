@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ def _load_config() -> dict:
 
 
 def _save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)  # 目录被删后重建，写配置不崩
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -222,14 +224,42 @@ def _db():
 
 # ──────────────────────── 存储目录（本地私有数据统一存放处） ────────────────────────
 
+# 历史上限：够回看几处常用位置即可，多了反而难找（新用过的顶到最前）
+_STORAGE_HISTORY_MAX = 10
+
+
+def _push_storage_history(cfg: dict, path: str) -> None:
+    """把目录记到历史头部（去重、截断）。cfg 由调用方负责落盘。"""
+    hist = cfg.get("storage_history") or []
+    kept = [p for p in hist if isinstance(p, str) and p != path]
+    cfg["storage_history"] = ([path] + kept)[:_STORAGE_HISTORY_MAX]
+
+
+def _storage_history(current: str) -> list[str]:
+    """历史列表：当前目录永远置顶（老配置没有历史时也能看到现在在哪）。"""
+    hist = [p for p in (_load_config().get("storage_history") or []) if isinstance(p, str)]
+    return [current] + [p for p in hist if p != current]
+
+
 def get_storage_paths() -> dict:
-    """当前存储目录及其中的数据库、图片缓存位置。"""
+    """当前存储目录及其中的数据库、图片缓存位置，外加用过的历史目录。"""
     return {
         "path": str(DATA_DIR),
         "db_path": str(DB_PATH),
         "cache_dir": str(DATA_DIR / "cache" / "img"),
         "exists": DATA_DIR.exists(),
+        "history": _storage_history(str(DATA_DIR)),
     }
+
+
+def remove_storage_history(path: str) -> list[str]:
+    """从历史里移除一条（当前目录移不掉——置顶展示由 _storage_history 保证）。"""
+    path = (path or "").strip()
+    cfg = _load_config()
+    hist = cfg.get("storage_history") or []
+    cfg["storage_history"] = [p for p in hist if isinstance(p, str) and p != path]
+    _save_config(cfg)
+    return _storage_history(str(DATA_DIR))
 
 
 def get_cache_dir() -> Path:
@@ -269,6 +299,9 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
         same = target == old_data_dir
     # 同路径但目录已不存在：不视为 no-op，往下走 mkdir 重建（修复场景）
     if same and target.is_dir():
+        cfg = _load_config()
+        _push_storage_history(cfg, str(target))   # 升级后的老配置首条历史从这里补上
+        _save_config(cfg)
         return {**get_storage_paths(), "migrated": False}
 
     target.mkdir(parents=True, exist_ok=True)
@@ -316,6 +349,9 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
     else:
         cfg["storage_dir"] = str(target)
     cfg.pop("db_path", None)  # 清掉旧版「数据库单独指定位置」的配置键
+    # 旧位置也留痕：从默认目录第一次切走时，老位置才不会从历史里消失
+    _push_storage_history(cfg, str(old_data_dir))
+    _push_storage_history(cfg, str(target))
     _save_config(cfg)
     return {**get_storage_paths(), "migrated": migrated, "db_used_existing": db_used_existing}
 
@@ -479,6 +515,156 @@ def get_domain_need_proxy(url: str) -> bool | None:
         if row is None or row["need_proxy"] is None:
             return None
         return bool(row["need_proxy"])
+
+
+# ──────────────────────── 域名重置 ────────────────────────
+
+# 至少两段（允许 .com.cn 这类整体作 TLD 判断不在此处，格式校验只看形状）
+_DOMAIN_SHAPE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+    re.I,
+)
+
+
+def _norm_domain(raw: str) -> str:
+    """归一化用户输入：小写、剥掉 scheme/路径（粘贴完整 URL 也能用）。"""
+    d = (raw or "").strip().lower()
+    for prefix in ("https://", "http://"):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    return d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+
+
+def _swap_url_domain(url: str, old: str, new: str) -> str:
+    """改写 URL 的主机名：old 及其子域名（cdn.old → cdn.new）换掉，其余原样。"""
+    try:
+        p = urlparse(url)
+        host = p.hostname or ""
+    except Exception:
+        return url
+    low = host.lower()
+    if low == old:
+        new_host = new
+    elif low.endswith("." + old):
+        new_host = host[: -len(old)] + new   # 保留子域名前缀及其原始大小写
+    else:
+        return url
+    netloc = new_host
+    try:
+        if p.port:
+            netloc += f":{p.port}"
+    except ValueError:
+        pass  # 非法端口：原样拼回，不因它中断整次重置
+    if "@" in (p.netloc or ""):
+        netloc = p.netloc.rsplit("@", 1)[0] + "@" + netloc
+    return p._replace(netloc=netloc).geturl()
+
+
+def _swap_text_domain(text: str, old: str, new: str) -> str:
+    """文本（缩略图/favicon/详情 JSON/规则模式）中的域名按边界整体替换。
+
+    边界：前面不是域名标签字符（否则 myexample.live 不会误中），
+    后面不能延伸出更长的域名（example.live.backup.com 不是本域，不替换）。
+    """
+    if not text or old not in text.lower():
+        return text
+    pattern = re.compile(
+        r"(?<![a-z0-9-])" + re.escape(old) + r"(?![a-z0-9.-]*[a-z0-9])",
+        re.I,
+    )
+    return pattern.sub(new, text)
+
+
+def replace_domain(old: str, new: str) -> dict:
+    """域名重置：原域名失效时，把它（含子域名）在库里的所有引用换成新域名。
+
+    覆盖：records 的 url / thumbnail / favicon / details、record_tags 关联、
+    domains 表（别名与域名代理规则）、proxy_rules 中的匹配模式。
+    新旧 URL 撞车（两个域名版本都导入过）时合并到新记录：标签迁过去，删旧行。
+    单事务，失败整体回滚。返回 {records, merged, domain, rules} 计数。
+    """
+    old = _norm_domain(old)
+    new = _norm_domain(new)
+    if not old or not new:
+        raise ValueError("域名不能为空")
+    if not _DOMAIN_SHAPE.match(old):
+        raise ValueError(f"原域名格式无效：{old}")
+    if not _DOMAIN_SHAPE.match(new):
+        raise ValueError(f"新域名格式无效：{new}")
+    if old == new:
+        raise ValueError("新域名与原域名相同")
+
+    with _db() as conn:
+        updated = merged = rules_updated = 0
+
+        for row in conn.execute(
+            "SELECT url, thumbnail, favicon, details FROM records"
+        ).fetchall():
+            new_url = _swap_url_domain(row["url"], old, new)
+            if new_url != row["url"]:
+                if conn.execute(
+                    "SELECT 1 FROM records WHERE url = ?", (new_url,)
+                ).fetchone():
+                    # 新域名版本已存在：标签并过去，删掉旧记录（它的封面等随行作废）
+                    conn.execute(
+                        "UPDATE OR IGNORE record_tags SET record_url = ? WHERE record_url = ?",
+                        (new_url, row["url"]),
+                    )
+                    conn.execute("DELETE FROM record_tags WHERE record_url = ?", (row["url"],))
+                    conn.execute("DELETE FROM records WHERE url = ?", (row["url"],))
+                    merged += 1
+                    continue
+                conn.execute("UPDATE records SET url = ? WHERE url = ?", (new_url, row["url"]))
+                # OR IGNORE：新旧记录共有标签时主键不冲突，独有标签照常迁走
+                conn.execute(
+                    "UPDATE OR IGNORE record_tags SET record_url = ? WHERE record_url = ?",
+                    (new_url, row["url"]),
+                )
+                updated += 1
+            thumb = _swap_text_domain(row["thumbnail"], old, new)
+            favicon = _swap_text_domain(row["favicon"], old, new)
+            details = _swap_text_domain(row["details"], old, new)
+            if (thumb, favicon, details) != (row["thumbnail"], row["favicon"], row["details"]):
+                conn.execute(
+                    "UPDATE records SET thumbnail = ?, favicon = ?, details = ? WHERE url = ?",
+                    (thumb, favicon, details, new_url),
+                )
+
+        # domains 表：改名保住别名/代理规则；new 已有行则把 old 的设置（仅在 new 缺时）并过去
+        old_row = conn.execute("SELECT * FROM domains WHERE name = ?", (old,)).fetchone()
+        if old_row is not None:
+            new_row = conn.execute("SELECT * FROM domains WHERE name = ?", (new,)).fetchone()
+            if new_row is None:
+                conn.execute("UPDATE domains SET name = ? WHERE name = ?", (new, old))
+            else:
+                if new_row["need_proxy"] is None and old_row["need_proxy"] is not None:
+                    conn.execute(
+                        "UPDATE domains SET need_proxy = ? WHERE name = ?",
+                        (old_row["need_proxy"], new),
+                    )
+                if not new_row["display_name"] and old_row["display_name"]:
+                    conn.execute(
+                        "UPDATE domains SET display_name = ? WHERE name = ?",
+                        (old_row["display_name"], new),
+                    )
+                conn.execute("DELETE FROM domains WHERE name = ?", (old,))
+
+        for row in conn.execute("SELECT id, pattern FROM proxy_rules").fetchall():
+            new_pattern = _swap_text_domain(row["pattern"], old, new)
+            if new_pattern == row["pattern"]:
+                continue
+            if conn.execute(
+                "SELECT 1 FROM proxy_rules WHERE pattern = ?", (new_pattern,)
+            ).fetchone():
+                conn.execute("DELETE FROM proxy_rules WHERE id = ?", (row["id"],))
+            else:
+                conn.execute(
+                    "UPDATE proxy_rules SET pattern = ? WHERE id = ?", (new_pattern, row["id"])
+                )
+            rules_updated += 1
+
+        return {"old": old, "new": new,
+                "records": updated, "merged": merged, "rules": rules_updated}
 
 
 # ──────────────────────── Proxy rules ────────────────────────

@@ -1,5 +1,6 @@
 /* 左侧栏构建与「更多」溢出测量/展开。 */
 import { render } from "./board.js";
+import { openDomain } from "./proxy-panel.js";
 import { $, MIN_GROUP, el, hostOf, rootDomain, state } from "./state.js";
 
 /* ---------- 侧边栏 ---------- */
@@ -33,6 +34,14 @@ export function buildSidebar() {
     inner += `<span class="sidebar-count">${count}</span>`;
     item.innerHTML = inner;
     item.addEventListener("click", onClick);
+    /* hover 出「编辑」：打开域名管理（别名 / 代理规则 / 域名重置）。
+       不用双击——点击后 render() 会重建侧栏，双击事件落在两个不同节点上不触发 */
+    const edit = el("span", "sidebar-edit", "编辑");
+    edit.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDomain(label);
+    });
+    item.appendChild(edit);
     sb.appendChild(item);
     return item;
   };

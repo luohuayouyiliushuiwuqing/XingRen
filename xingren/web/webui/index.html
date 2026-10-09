@@ -75,6 +75,15 @@
           <option value="0">直连</option>
         </select>
       </div>
+      <div class="domain-reset">
+        <label>域名重置（原域名挂了就换到新域名）</label>
+        <div class="proxy-row">
+          <input id="domainResetInput" class="input" placeholder="新域名，如 example.com" spellcheck="false">
+          <button id="domainResetBtn" class="btn-ghost">替换</button>
+        </div>
+        <div class="proxy-hint">把 <code id="domainResetOld"></code>（含其子域名）的记录链接、封面、
+          详情链接、域名规则与代理规则整体改写为新域名，不可撤销。</div>
+      </div>
       <div class="modal-actions">
         <button id="domainCancel" class="btn-ghost">取消</button>
         <button id="domainSave" class="btn-primary">保存</button>
@@ -132,6 +141,10 @@
       <div class="proxy-section">
         <label>当前位置（本地私有数据，不随项目目录走）</label>
         <div id="dbCurrent" class="db-current">加载中…</div>
+      </div>
+      <div class="proxy-section">
+        <label>历史位置（点击直接切换，不用重新选）</label>
+        <div id="dbHistory" class="db-history"><div class="fs-empty">加载中…</div></div>
       </div>
       <div class="proxy-section">
         <label>切换到新目录</label>
