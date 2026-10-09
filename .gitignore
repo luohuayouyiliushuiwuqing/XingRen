@@ -13,3 +13,7 @@ build/
 
 # 图片本地缓存（删除整个 cache/ 目录即可强制刷新）
 cache/
+
+# 浏览器插件打包产物（.pem 是签名私钥，绝不能入库）
+extension.crx
+extension.pem
