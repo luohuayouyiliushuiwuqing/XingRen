@@ -8,6 +8,46 @@
 
 ---
 
+## 2026-10-09 17:59:02 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 刷新 `CLAUDE.md`，把拆分后已经过时的六处描述对齐到当前代码（1 文件，未动任何代码）
+
+  **改了什么（拆分那批只更新了架构图与 Frontend 段，其余章节还停在旧实现）**
+
+  1. **静态路由**：`ROOT = Path(__file__).parent` 那段补上「规则解析而非白名单」——
+     `staticfiles.resolve_static()` 放行 `/`、`/index.html`、顶层 html/css/js 与白名单目录 `js/`，
+     **往 `js/` 加模块不需要改服务端**；同时记下拒绝规则（`..`、`\`、深度>2、未知后缀、
+     符号链接逃逸、**不做 percent-decode**）与 demo 那套解析器**拒绝子目录**的差异。
+  2. **打包两条坑**：package-data 的 `*` 不跨目录分隔符（`js/*.js` 必须显式写，再深一层还得再加）；
+     setuptools 不清理 `build/lib`，**删源文件后要先 `rm -rf build *.egg-info`** 否则旧副本照打进 wheel
+     （`app.js` 就这么复活过一次）。
+  3. **存储章节重写**：原来说「`metadata.db` 固定在仓库根 / `XINGREN_DATA_DIR` 覆盖」已过时——
+     现在是**统一存储目录**（DB + `cache/img`），`config.json` 记 `storage_dir`，
+     **`XINGREN_DATA_DIR` 只挪 base dir（config.json 在哪读），不直接指定数据库**；
+     `set_storage_dir()` 免重启迁移、目标已有库直接用、缺目录下次连接自动建。
+     另补合并规则的新语义：`success: False` **不覆盖内容但置 `fetched=1`**（该列 = 已尝试过），
+     以及快照入库 `insert_quick_records`（单事务、不联网、`fetched=0`）这条并列写路径。
+  4. **API 表 5 行 → 15 行**，补齐全部 17 个路径（标签/域名/代理规则/代理探测/存储目录/目录浏览/
+     快照入库），并新增**代理解析优先级**段：`server.effective_proxy()`（模块函数而非 Handler 方法，
+     否则 `imgproxy ⇄ server` 循环）、URL 规则 > 域名规则 > 全局、命中即强制、地址恒取 `global_proxy`、
+     国内域名由 `_is_domestic()` 强制直连；`/api/img` 段落指向 `imgproxy.py`。
+  5. **数据模型补全**：记录结构漏了 `fetched` / `domain`（读取时算，不落库）/ `tags`（JOIN 附上）；
+     补 5 张表清单，标注 **`record_tags` 的外键列是 `record_url` 而不是 `url`**（曾照 `url` 写 SQL 报错）。
+  6. **验收手段**（原来只写了 demo 那两条）：补前端两条命令 ——
+     `node --check --input-type=module < 文件`（裸 `--check` 按 CommonJS 解析会误报 `import`）与
+     `node --input-type=module -e "await import(file://…)"`（**唯一能查出 import 路径写错 /
+     漏 export 的静态手段**，`--check` 不解析 import）；补 `py_compile`；
+     补「端到端只能靠 Playwright + 隔离 `XINGREN_DATA_DIR`」，避免污染真实 `metadata.db`。
+  7. 另补两句排障提示：模块函数**不再挂 `window`**，控制台用 `window.XR`；
+     以及两个既有 quirk（状态栏启动文案有竞态、服务器无 `do_HEAD` 回 501）——
+     记下来免得下次重新诊断。
+
+  **核对**（程序化，非目测）：文档里的模块名 vs `js/*.js` 磁盘文件 **12/12 一致、无幽灵文件**；
+  API 表 vs `server.py` 路由 **双向零缺漏**；两条 Node 检查命令**按文档原样实跑通过**；
+  `CLAUDE.md` 按约定仍不入库（`??`）。
+
 ## 2026-10-09 13:54:36 +0800
 
 - **用户**: haijie yin
