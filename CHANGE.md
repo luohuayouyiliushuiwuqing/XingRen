@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-10-09 13:02:15 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 把「浏览器插件」的设计思路记入 `TODO.md` 第 8 项（1 文件，未动任何代码）
+
+  - **本轮只落设计、不实现**（用户：「我需要设计思路，放到TODO」）。
+    v1 范围已定：Chrome/Edge MV3、**只做「收藏当前页 + 批量收藏标签页」**、
+    缩略图用注入脚本读 `og:image`（不用截图）、**鉴权留给 TODO 第 2 项**。
+  - 核心结论：**零服务端改动**——`POST /api/records/quick` 本就是快照入库接口，
+    插件递过去的 title/favicon/og:image 与「导入 HTML 书签」完全同构，
+    走 `fetched=0` + 详情按需补抓这条既有链路；批量缺封面由点「详情/重新抓取」自愈。
+  - 记下五处实测确认过的坑：
+    1. **CORS 只能靠 `host_permissions`**（服务端不发 `Access-Control-*`、无 `do_OPTIONS`，
+       预检 501）；改 `text/plain` 只免预检、免不了响应不可读，**没有用**
+    2. **缩略图/favicon 必须绝对 http(s)**：`imgSrc()` 会包成 `/api/img?src=`，
+       服务端对非 http 一律 400 → `data:` 图显示不出来
+    3. **`popup.html` 不能有内联 `<script>`**：MV3 CSP 静默拦截，表现为「装得上、点了没反应」
+    4. **图标要么全套要么全不写**：引用不存在的图标文件会导致 load-unpacked 直接失败
+    5. 受限页面分两类处理（非 http(s) 禁用按钮 / 注入抛错则降级成仅 title+favicon）；
+       批量单次 POST 不分片，但空列表不能发（服务端 400）
+  - 目录定在仓库根 `extension/`：`packages.find` 只 include `xingren*`、`.gitignore`
+    无此条 → 不进 wheel、不被忽略，与 Python 包零耦合。
+  - 附验收清单（load-unpacked、`node --check`、payload 契约、`--load-extension` 驱动、
+    手动矩阵），实现阶段照着走。
+
 ## 2026-10-09 11:27:43 +0800
 
 - **用户**: haijie yin
