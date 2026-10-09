@@ -9,6 +9,7 @@
 import json
 import os
 import sys
+import time
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,31 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
 }
 STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/style.css": "style.css", "/app.js": "app.js"}
+
+# 图片代抓：单次尝试秒数（代理挂起时要快点认输，直连给慢 CDN 留余量）+
+# 失败负缓存 TTL——浏览器每次 render 都会重建 <img>，没有负缓存的话
+# 一张挂掉的图会反复拖住工作线程（实测一次 5~10s）
+IMG_TIMEOUT_PROXY = 5
+IMG_TIMEOUT = 8
+IMG_FAIL_TTL = 60
+_IMG_FAIL: dict[str, tuple[float, int, bytes, str]] = {}  # digest -> (失效时刻, status, body, ctype)
+
+
+def _img_try(src: str, proxy: str | None) -> tuple[int, bytes, str]:
+    """一次图片请求，返回 (status, body, content-type)；失败抛异常交给调用方降级。"""
+    resp = http_get(src, proxy=proxy, timeout=IMG_TIMEOUT_PROXY if proxy else IMG_TIMEOUT)
+    body = resp.content
+    ctype = (resp.headers.get("content-type") or "application/octet-stream").split(";")[0]
+    status = resp.status_code if 100 <= (resp.status_code or 0) < 600 else 502
+    return status, body, ctype
+
+
+def _remember_img_fail(digest: str, status: int, body: bytes, ctype: str) -> None:
+    if len(_IMG_FAIL) > 400:  # 顺手清掉过期的，别无限涨
+        now = time.monotonic()
+        for k in [k for k, v in _IMG_FAIL.items() if v[0] <= now]:
+            del _IMG_FAIL[k]
+    _IMG_FAIL[digest] = (time.monotonic() + IMG_FAIL_TTL, status, body[:8192], ctype)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,7 +87,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             handler()
         except (BrokenPipeError, ConnectionResetError):
-            raise
+            # 客户端提前断开是常态（图片超时会被浏览器取消）——
+            # 放出去只会让 socketserver 打一整段 traceback，这里一行带过
+            self.log_message("client disconnected")
         except Exception as exc:
             try:
                 self._send_json({"ok": False, "error": str(exc)}, 500)
@@ -145,12 +173,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        # 只有成功才允许浏览器缓存一天：给 4xx/5xx 也发 max-age=86400 的话，
+        # 一次超时会让缩略图一整天都修不好（浏览器不再重试）
+        self.send_header(
+            "Cache-Control", "public, max-age=86400" if 200 <= status < 300 else "no-store"
+        )
         self.end_headers()
         self.wfile.write(body)
 
     def handle_img(self, qs: dict) -> None:
-        """服务端代抓图片（域名代理优先，结果落本地缓存），避免浏览器直连外站被重置。"""
+        """服务端代抓图片（代理优先、失败回退直连），结果落本地缓存。"""
         src = (qs.get("src") or [""])[0]
         global_proxy = (qs.get("proxy") or [""])[0].strip() or ""
         if not src.startswith(("http://", "https://")):
@@ -167,24 +199,46 @@ class Handler(BaseHTTPRequestHandler):
             self._send_img(bin_path.read_bytes(), ct_path.read_text(encoding="utf-8").strip())
             return
 
+        # 负缓存：短时间内失败过的直接回，不让线程再干等一次超时
+        # （每次 render 都会重建 <img>，没有这层的话每张挂掉的图都要再拖 5s）
+        now = time.monotonic()
+        failed = _IMG_FAIL.get(digest)
+        if failed and failed[0] > now:
+            self._send_img(failed[2], failed[3], failed[1])
+            return
+
         proxy = self._effective_proxy(src, global_proxy)
         if proxy and _is_domestic(src):
             proxy = None
-        try:
-            resp = http_get(src, proxy=proxy, timeout=10)
-        except Exception:
-            self.send_error(502)
-            return
-        body = resp.content
-        ctype = resp.headers.get("content-type", "application/octet-stream").split(";")[0]
+
+        status, body, ctype = 502, b"", "text/plain"
+        if proxy:
+            try:
+                status, body, ctype = _img_try(src, proxy)
+            except Exception:
+                status = 502   # 代理挂起（实测会 hang 满超时）→ 下面试直连
+            if not (200 <= status < 300):
+                # 异常或代理吐了错误页，都再给直连一次机会；
+                # 直连也失败就保留代理那次结果（不覆盖成更差的 502）
+                try:
+                    status, body, ctype = _img_try(src, None)
+                except Exception:
+                    pass
+        else:
+            try:
+                status, body, ctype = _img_try(src, None)
+            except Exception:
+                pass
 
         # 只缓存成功的图片（4xx/5xx 不落盘，避免把错误页缓存住）
-        if 200 <= (resp.status_code or 0) < 300 and body:
+        if 200 <= status < 300 and body:
             cache_dir.mkdir(parents=True, exist_ok=True)
             bin_path.write_bytes(body)
             ct_path.write_text(ctype, encoding="utf-8")
+            _IMG_FAIL.pop(digest, None)
+        else:
+            _remember_img_fail(digest, status, body, ctype)
 
-        status = resp.status_code if 100 <= (resp.status_code or 0) < 600 else 502
         self._send_img(body, ctype, status)
 
     # ---------- 业务 ----------

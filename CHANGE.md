@@ -8,6 +8,45 @@
 
 ---
 
+## 2026-10-09 10:42:06 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: `/api/img` 加代理→直连降级、失败负缓存与正确的缓存头；客户端断开不再打整段 traceback（`server.py`，1 文件）
+
+  **现场**：日志成片 `GET /api/img … 502`，紧跟 `curl: (28) Connection timed out after 10002 ms`
+  和客户端断开时 `send_error` 抛出的 `BrokenPipeError` 整段 traceback。
+
+  **诊断**（本机实测）：
+
+  - `127.0.0.1:7897` **在监听**，但经它访问 `opengraph.githubassets.com` **hang 满 12s**（代理上游不通）
+  - **直连 200，0.3~1.2s**（`x-ratelimit-limit: 100`）——之前那个 429 只是瞬时限流
+  - 即：根因是 `/api/img` **没有代理→直连降级**（抓取链 `fetch_page` 有，图片代理没有）
+
+  **修复**：
+
+  - `_img_try()` + 降级：代理失败/超时 → 回退直连；超时 `10s` 单档改为
+    **代理 5s / 直连 8s**（`IMG_TIMEOUT_PROXY` / `IMG_TIMEOUT`）
+  - **失败负缓存 60s**（`_IMG_FAIL`，按 digest，超 400 条顺手清过期）：
+    每次 `render()` 都会重建 `<img>`，没有这层的话一张挂掉的图每次都要再拖 5~10s 线程
+  - **`Cache-Control` 只对 2xx 发 `max-age=86400`**，失败一律 `no-store`——
+    原来 502/429 也发一天的缓存头，浏览器会把失败的缩略图**缓存一整天修不好**
+  - `_safe` 改为吞掉 `BrokenPipeError`/`ConnectionResetError`（客户端提前断开是常态），
+    打一行 `client disconnected`，不再让 `socketserver` 吐整段 traceback
+
+  **验收**（临时实例 `127.0.0.1:4100`，探测到代理 7897）：
+
+  | 场景 | 结果 |
+  | --- | --- |
+  | 走代理的 GitHub 图（首次） | **200 / 5.37s**（代理 5s 超时 + 直连 0.37s）——原为 10s 后 502 |
+  | 同一张第二次 | 200 / **0.003s**，`Cache-Control: public, max-age=86400` |
+  | 必然失败的 URL | 502 / 5.27s，`Cache-Control: **no-store**` |
+  | 同一失败 URL 第二次 | 502 / **0.002s**（负缓存） |
+  | 客户端 1s 即断开 | 日志一行 `client disconnected`，**Traceback 计数 0** |
+
+  ⚠ **服务需重启**：4000 端口的实例是 10:35:04 启动的，早于本次 `server.py` 修改（10:39:43），
+  跑的还是旧代码；JS/CSS 是按请求读的，刷新即可，Python 改动必须重启。
+
 ## 2026-10-09 10:28:09 +0800
 
 - **用户**: haijie yin
