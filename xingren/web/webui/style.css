@@ -346,6 +346,12 @@ main {
   overflow: hidden;
   /* 不设 max-width：卡片撑满网格单元，整行全宽均匀分布 */
   transition: border-color .15s, transform .15s;
+  /* 视口外的卡片跳过布局与绘制。侧栏宽度过渡会让 board 每帧重排，
+     没有这条时 855 张卡要重排 7 轮、单帧最长 83ms（明显卡顿）；
+     加上后 0 长帧、最大 16.8ms，动画照常。
+     auto <尺寸> = 记住真实渲染尺寸，卡片高度实测恒为 243px，估算不产生位移 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 281px auto 243px;
 }
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
 

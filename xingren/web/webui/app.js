@@ -353,7 +353,7 @@ async function loadProxyDomains() {
 
 /* ---------- 渲染 ---------- */
 
-/* 大组分片建卡片：每帧 100 张，展开即可见且不卡顿 */
+/* 分组分片建卡片：每帧 100 张，既不卡顿也不会一次建出全部节点 */
 function appendCardsChunked(grid, recs, start = 0) {
   const CHUNK = 100;
   const end = Math.min(start + CHUNK, recs.length);
@@ -363,6 +363,62 @@ function appendCardsChunked(grid, recs, start = 0) {
       if (grid.isConnected) appendCardsChunked(grid, recs, end);
     });
   }
+}
+
+/* ---------- 分组卡片按需建：只建视口附近的分组 ---------- */
+const CARD_MIN = 240;      // style.css 的 --card-w
+const CARD_GAP = 16;       // .board-grid / .domain-grid 的 gap
+const CARD_BODY_H = 86.37; // 卡片正文（标题 2 行 + 域名行）实测高度
+let groupObserver = null;
+
+/* 所有分组网格同宽，所以**只读一次 clientWidth**：读取会强制重排，
+   在循环里逐个「读宽 + 写 minHeight」等于把整块看板重排几十遍 */
+function gridMetrics() {
+  const g = document.querySelector("#board .domain-grid, #board .board-grid");
+  const w = g ? g.clientWidth : 0;
+  if (!w) return null;
+  const cols = Math.max(1, Math.floor((w + CARD_GAP) / (CARD_MIN + CARD_GAP)));
+  const colW = (w - (cols - 1) * CARD_GAP) / cols;
+  return { cols, rowH: (colW - 2) * 9 / 16 + CARD_BODY_H };
+}
+
+/* 未建卡片的分组先按公式占位高度：缩略图 16:9 + 固定正文。
+   三个视口实测与真实值一致（1280→220.81 / 1440→243.31 / 1920→232.63），
+   占准了滚动条才不会在补建时跳动 */
+function reserveHeight(grid, recs, m) {
+  if (!recs.length || !m) return;
+  const rows = Math.ceil(recs.length / m.cols);
+  grid.dataset.pending = "1";
+  grid.style.minHeight = Math.round(rows * m.rowH + (rows - 1) * CARD_GAP) + "px";
+}
+
+function fillGrid(grid) {
+  if (!grid || grid.dataset.pending !== "1") return;
+  delete grid.dataset.pending;
+  grid.style.minHeight = "";
+  appendCardsChunked(grid, grid.__recs || []);
+}
+
+/* 侧栏宽度 / 窗口尺寸变了 → 列数与行高随之变化，占位要跟着重算（量一次、写一批） */
+function recomputePendingGrids() {
+  const grids = document.querySelectorAll('[data-pending="1"]');
+  if (!grids.length) return;
+  const m = gridMetrics();
+  for (const g of grids) reserveHeight(g, g.__recs || [], m);
+}
+
+function resetGroupObserver() {
+  if (groupObserver) groupObserver.disconnect();
+  groupObserver = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting || e.target.classList.contains("collapsed")) continue;
+        groupObserver.unobserve(e.target);   // 折叠中的先留着，等分组头点开再建
+        fillGrid(e.target.__grid);
+      }
+    },
+    { root: document.querySelector(".board-wrap"), rootMargin: "800px 0px" }
+  );
 }
 
 function render() {
@@ -395,8 +451,10 @@ function render() {
 
   const sortedDomains = [...domainMap.entries()].sort((a, b) => b[1].length - a[1].length);
 
-  /* 分组条件包含「条数 > 20」：大列表走分组结构，
-     组内用 appendCardsChunked 分片建卡片，既默认展开又不卡顿 */
+  /* 分组结构默认展开，但**卡片不一次性建完**：只给分组头 + 占位高度，
+     滚到视口附近（rootMargin 800px）才补建该组卡片——
+     855 条（或导入 5000 条）时首屏只建看得见的那几百个节点 */
+  resetGroupObserver();
   if (sortedDomains.length <= 1 && visible.length <= 20) {
     // 平铺也包一层多列网格：.board 是纵向 flex，直接塞卡片会排成一列
     const grid = document.createElement("div");
@@ -404,6 +462,7 @@ function render() {
     for (const r of visible) grid.appendChild(createCard(r));
     board.appendChild(grid);
   } else {
+    const groups = [];
     for (const [domain, recs] of sortedDomains) {
       const section = document.createElement("div");
       section.className = "domain-group";
@@ -413,17 +472,27 @@ function render() {
       const grid = document.createElement("div");
       grid.className = "domain-grid";
       section.append(header, grid);
+      section.__grid = grid;
+      board.appendChild(section);
 
-      // 默认直接展开（分组头仍可点击手动收起/展开）
-      appendCardsChunked(grid, recs);
       header.addEventListener("click", () => {
         const opening = section.classList.contains("collapsed");
-        if (opening && !grid.childElementCount) {
-          appendCardsChunked(grid, recs);
+        if (opening) {                  // 手动展开：立即补建，不等滚动
+          groupObserver.unobserve(section);
+          fillGrid(grid);
         }
         section.classList.toggle("collapsed");
       });
-      board.appendChild(section);
+      groups.push({ section, grid, recs });
+    }
+
+    /* 分组全部入 DOM 后**统一量一次**宽度，再批量写占位高度——
+       占位先于建卡，卡片等滚到视口附近（rootMargin 800px）再补 */
+    const m = gridMetrics();
+    for (const { section, grid, recs } of groups) {
+      grid.__recs = recs;
+      reserveHeight(grid, recs, m);
+      groupObserver.observe(section);
     }
   }
 
@@ -1067,6 +1136,9 @@ async function saveDbPath() {
 function init() {
   $("sidebarToggle").addEventListener("click", () => {
     $("sidebar").classList.toggle("collapsed");
+    // 宽度过渡结束后列数才定下来，届时重算未建分组的占位高度
+    clearTimeout(window.__sbReflowTimer);
+    window.__sbReflowTimer = setTimeout(recomputePendingGrids, 240);
   });
 
   /* 滚轮落在侧边栏上时转发给右侧看板滚动——侧边栏自身固定不滑动。
@@ -1085,11 +1157,15 @@ function init() {
     { capture: true, passive: false }
   );
 
-  /* 窗口高度变了 → 重新测量侧栏可见条目（否则缩小后底部条目被裁掉且没有「更多」） */
-  let sbResizeTimer = 0;
+  /* 窗口尺寸变了 → 重测侧栏可见条目（否则缩小后底部条目被裁掉且没有「更多」），
+     同时按新列数重算未建分组的占位高度 */
+  let resizeTimer = 0;
   window.addEventListener("resize", () => {
-    clearTimeout(sbResizeTimer);
-    sbResizeTimer = setTimeout(buildSidebar, 150);
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      buildSidebar();
+      recomputePendingGrids();
+    }, 150);
   });
 
   $("addBtn").addEventListener("click", addUrl);
