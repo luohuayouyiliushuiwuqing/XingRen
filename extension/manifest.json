@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "行人看板收藏",
+  "version": "0.1.0",
+  "description": "一键把当前页 / 当前窗口标签页收进行人（XingRen）元数据看板",
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "收进行人看板"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

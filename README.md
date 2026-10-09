@@ -37,6 +37,7 @@ XingRen/
 ├── metadata.db            # SQLite 数据库（运行时生成，已 gitignore，位置可在界面迁移）
 ├── config.json            # 记录当前存储目录（运行时生成，已 gitignore）
 ├── docs/                  # git 子模块（→ XingRenMD）：CHANGE.md 变更记录 · TODO.md 待办 · CLAUDE.md 使用指引
+├── extension/             # 浏览器插件（Chrome/Edge MV3）：当前页 / 标签页一键收藏进看板，加载即用
 └── requirements.txt       # 全量 pinned 依赖（同时是 pyproject 的依赖来源）
 ```
 

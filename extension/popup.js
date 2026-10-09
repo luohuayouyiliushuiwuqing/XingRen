@@ -1,0 +1,191 @@
+/* 弹窗逻辑：① 收藏当前页（注入读 og:image/favicon）② 批量收藏当前窗口标签。
+   看板地址存 chrome.storage.local（不用 sync——不该把 127.0.0.1 同步到别的设备）。
+   错误分三类提示：fetch 网络失败（看板没开）/ data.ok === false（400、500）/ 成功回显。 */
+"use strict";
+
+let boardUrl = DEFAULT_BOARD_URL;   // 来自 defaults.js；storage 读不到时兜底
+
+function $(id) {
+  return document.getElementById(id);
+}
+
+function setStatus(msg, kind) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+/* 只收 http(s)：chrome://、file://、chrome-extension://、商店页一律不算 */
+function isHttpUrl(u) {
+  return /^https?:\/\//.test(u || "");
+}
+
+async function loadSettings() {
+  const data = await chrome.storage.local.get("boardUrl");
+  const saved = (data.boardUrl || "").trim();
+  boardUrl = saved || DEFAULT_BOARD_URL;
+  $("boardUrl").value = boardUrl;
+}
+
+/* 单次 POST、不分片（300 条约 60~150KB，服务端一个事务 <10ms）；
+   空列表不发——服务端会 400「缺少 items」，调用方先拦 */
+async function postItems(items) {
+  const resp = await fetch(`${boardUrl}/api/records/quick`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  return resp.json();
+}
+
+async function submit(items) {
+  if (!items.length) {
+    setStatus("没有可收藏的标签页", "err");
+    return false;
+  }
+  setStatus(`提交中…（${items.length} 条）`, "busy");
+  let data;
+  try {
+    data = await postItems(items);
+  } catch (e) {
+    setStatus("连不上看板：确认服务已启动、地址正确", "err");
+    return false;
+  }
+  if (!data.ok) {
+    setStatus("看板返回错误：" + (data.error || `HTTP ${data.status || "?"}`), "err");
+    return false;
+  }
+  setStatus(`新增 ${data.inserted}，跳过 ${data.skipped}`, "ok");
+  return true;
+}
+
+/* ---------- 收藏当前页 ---------- */
+
+/* 在点击那一刻注入：自包含（函数体被序列化，引不到 popup 的闭包），
+   host_permissions 已保证注入可用，activeTab 只是兜底。返回值取 results[0]?.result */
+function extractMeta() {
+  const abs = (v) => {
+    if (!v) return "";
+    try {
+      const u = new URL(v, location.href);
+      return /^https?:\/\//.test(u.href) ? u.href : "";
+    } catch {
+      return "";
+    }
+  };
+  const og =
+    document.querySelector('meta[property="og:image"]')?.content ||
+    document.querySelector('meta[name="twitter:image"]')?.content ||
+    "";
+  const icon = document.querySelector('link[rel~="icon"]')?.href || "";
+  return { thumbnail: abs(og), favicon: abs(icon) };
+}
+
+async function saveCurrent() {
+  const btn = $("saveCurrent");
+  btn.disabled = true;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !isHttpUrl(tab.url)) {
+      setStatus("当前页不是普通网页，无法收藏", "err");
+      return;
+    }
+    let extracted = { thumbnail: "", favicon: "" };
+    let degraded = false;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: extractMeta,
+      });
+      extracted = (results && results[0] && results[0].result) || extracted;
+    } catch (e) {
+      // PDF 阅读器、应用商店等注入失败 → 降级成只有 title + favicon 仍可收藏
+      degraded = true;
+    }
+    const favicon =
+      extracted.favicon || (isHttpUrl(tab.favIconUrl) ? tab.favIconUrl : "");
+    const ok = await submit([
+      {
+        url: tab.url,
+        title: tab.title || "",
+        thumbnail: extracted.thumbnail || "",
+        favicon,
+        tags: [],
+      },
+    ]);
+    if (ok && degraded) {
+      setStatus("已收藏（读不到页面元数据，仅标题/图标）", "ok");
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------- 批量收藏当前窗口标签 ---------- */
+
+async function collectibleTabs() {
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  return tabs.filter((t) => isHttpUrl(t.url));
+}
+
+async function saveAll() {
+  const btn = $("saveAll");
+  btn.disabled = true;
+  try {
+    const tabs = await collectibleTabs();
+    /* 只取 title + 过滤后的 favIconUrl——不注入（那要给每个标签页各注入一次），
+       缺封面没关系，看板里点「详情 / 重新抓取」会补上 */
+    await submit(
+      tabs.map((t) => ({
+        url: t.url,
+        title: t.title || "",
+        thumbnail: "",
+        favicon: isHttpUrl(t.favIconUrl) ? t.favIconUrl : "",
+        tags: [],
+      }))
+    );
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------- 看板地址设置 ---------- */
+
+async function saveUrl() {
+  const raw = $("boardUrl").value.trim().replace(/\/+$/, "");
+  if (!isHttpUrl(raw)) {
+    setStatus("地址须以 http:// 或 https:// 开头", "err");
+    return;
+  }
+  await chrome.storage.local.set({ boardUrl: raw });
+  boardUrl = raw;
+  setStatus("地址已保存", "ok");
+}
+
+/* ---------- 初始化 ---------- */
+
+async function init() {
+  await loadSettings();
+
+  const tabs = await collectibleTabs();
+  $("tabCount").textContent = String(tabs.length);
+  $("saveAll").disabled = tabs.length === 0;
+
+  /* 受限页面（chrome://、file://、商店页…）：禁用按钮并说明原因。
+     反过来，把 popup.html 自己当标签页打开做自动化测试时也会走到这里——行为一致 */
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !isHttpUrl(tab.url)) {
+    $("saveCurrent").disabled = true;
+    $("currentHint").hidden = false;
+    $("currentHint").textContent = "当前标签不是网页（chrome:// / 文件等），无法读取元数据";
+  }
+
+  $("saveCurrent").addEventListener("click", saveCurrent);
+  $("saveAll").addEventListener("click", saveAll);
+  $("saveUrl").addEventListener("click", saveUrl);
+  $("boardUrl").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveUrl();
+  });
+}
+
+init();

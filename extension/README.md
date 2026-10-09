@@ -1,0 +1,65 @@
+# 行人看板 · 浏览器插件（Chrome / Edge，MV3）
+
+一键把**当前页**或**当前窗口的全部标签页**收进行人（XingRen）元数据看板
+——省掉「复制 URL → 切窗口 → 粘贴」，浏览器已经知道的 title / favicon / og:image
+直接送进看板。
+
+零服务端改动：走的就是快照入库接口 `POST /api/records/quick`（单事务、重复 URL 自动
+跳过、标签不存在会建）。入库为 `fetched=0`，详情字段打开时按需补抓，缺封面在看板里点
+「详情 / 重新抓取」即可补上。
+
+## 安装（加载已解压的扩展）
+
+1. 打开 `chrome://extensions`（Edge 用 `edge://extensions`）
+2. 右上角打开**开发者模式**
+3. 点**加载已解压的扩展程序** → 选择本目录（`XingRen/extension/`）
+4. 工具栏出现拼图图标，钉到工具栏即可使用
+
+无需构建、无需安装依赖；改完代码在扩展页点「重新加载」即生效。
+
+## 使用
+
+- **收藏当前页**：在要收藏的网页上点插件图标 →「收藏当前页」。
+  自动读 `og:image` / favicon，链接保存为绝对地址。
+- **收藏当前窗口标签（N）**：一键批量入库，单次 POST；只收 http(s) 标签，
+  重复 URL 由服务端跳过。
+- **看板地址**：折叠区里改，默认 `http://127.0.0.1:4000`（存
+  `chrome.storage.local`，不跨设备同步）。存的是本机 / 内网 / 远程看板皆可。
+
+## 行为说明（会踩的坑，改代码前先读）
+
+- **跨域**：看板服务端不发任何 `Access-Control-*`、也没有 `do_OPTIONS`，全靠
+  manifest 里的 `host_permissions: ["http://*/*","https://*/*"]` —— 装了权限后
+  Chrome 整个跳过 CORS。改用 `text/plain` 免预检但解决不了「响应不可读」，没用。
+- **缩略图 / favicon 必须是绝对 http(s) URL**：看板前端无条件包成
+  `/api/img?src=`，服务端对非 http 的 `src` 一律 400 → `data:` 图显示不出来。
+  注入函数里用 `new URL(v, location.href)` 绝对化后仍按 `/^https?:\/\//` 过滤。
+- **受限页面两类**：`tab.url` 不匹配 `^https?://`（chrome://、file://、商店页）
+  → **按钮禁用**并提示；http(s) 但注入失败（PDF 阅读器、应用商店）→ **降级**成
+  只有 title + favicon 仍可收藏。批量只筛 http(s)，且不注入（每页注入一次太贵）。
+- **popup 不能有内联 `<script>`**：MV3 CSP 是 `script-src 'self'`，内联被静默拦掉，
+  表现为「装得上、点了没反应」——本目录全部外链。
+- **图标**：manifest 未引用任何 icon 文件，用 Chrome 默认拼图；要加图标必须全套齐。
+
+## 手动验收矩阵
+
+| 场景 | 预期 |
+| --- | --- |
+| 普通 http 页（有 og:image） | 收藏成功，卡片有封面 |
+| PDF 阅读器 / 应用商店（注入失败） | 提示「已收藏（仅标题/图标）」 |
+| `chrome://` / 文件页 | 「收藏当前页」禁用并提示 |
+| 看板没开 | 提示「连不上看板」 |
+| 重复收藏同一页 | `新增 0，跳过 1` |
+| 批量含已收藏的 | `新增 N，跳过 M` |
+
+## 文件
+
+```
+extension/
+├── manifest.json   # MV3：permissions / host_permissions / popup / service worker
+├── popup.html|css  # 弹窗 UI（脚本必须外链）
+├── popup.js        # 收藏逻辑（注入读元数据、批量 POST、三类错误提示）
+├── defaults.js     # 共享默认看板地址（background 与 popup 同源引用）
+├── background.js   # onInstalled 补写默认地址
+└── README.md
+```

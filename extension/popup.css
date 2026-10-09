@@ -1,0 +1,83 @@
+/* 收进看板弹窗：窄卡片，两颗主操作按钮 + 折叠的地址设置 */
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 12px;
+  font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1f2329;
+  background: #fff;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.brand { font-weight: 600; font-size: 13.5px; }
+
+.status {
+  font-size: 12px;
+  color: #8a919c;
+  text-align: right;
+  min-height: 1.4em;
+}
+.status.ok { color: #1a7f37; }
+.status.err { color: #d1242f; }
+.status.busy { color: #9a6700; }
+
+.actions { display: flex; flex-direction: column; gap: 8px; }
+
+button {
+  padding: 7px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  font: inherit;
+  color: #1f2329;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: #eef1f4; border-color: #b6bec7; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: #1a5fd0; border-color: #1a5fd0; }
+
+.hint {
+  font-size: 11.5px;
+  color: #8a919c;
+  background: #f6f8fa;
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+
+details { margin-top: 12px; border-top: 1px solid #eaeef2; padding-top: 8px; }
+summary { cursor: pointer; font-size: 12.5px; color: #57606a; user-select: none; }
+
+.row { display: flex; gap: 6px; margin: 8px 0 6px; }
+.row input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font: 12px ui-monospace, Consolas, monospace;
+}
+.row input:focus { outline: 2px solid #1f6feb33; border-color: #1f6feb; }
+.row button { flex: none; }
+
+details .hint { background: none; padding: 0; }
+details code {
+  font: 11.5px ui-monospace, Consolas, monospace;
+  background: #f6f8fa;
+  border-radius: 3px;
+  padding: 0 3px;
+}
