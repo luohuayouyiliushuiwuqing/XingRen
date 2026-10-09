@@ -1,10 +1,10 @@
 """本地演示服务：托管静态页面，并提供 /api/fetch 接口。
 
 接口用 Scrapling 抓取指定网址，再按 CSS 选择器提取元素，供试验台展示。
-抓取逻辑复用 xingren.core 的 fetcher / fields。
+抓取逻辑复用 almond.core 的 fetcher / fields。
 
-用法：python -m xingren.web.demo.server   （默认 http://127.0.0.1:8765/，在仓库根目录执行）
-     或安装后直接 xingren-demo
+用法：python -m almond.web.demo.server   （默认 http://127.0.0.1:8765/，在仓库根目录执行）
+     或安装后直接 almond-demo
 """
 
 import json
@@ -13,8 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from xingren.core.fields import extract_fields
-from xingren.core.fetcher import fetch_page
+from almond.core.fields import extract_fields
+from almond.core.fetcher import fetch_page
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 

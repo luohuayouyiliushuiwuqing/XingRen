@@ -10,8 +10,8 @@ from hashlib import sha256
 
 from curl_cffi.requests import get as http_get
 
-from xingren.core.fetcher import _is_domestic
-from xingren.core.records import get_cache_dir
+from almond.core.fetcher import _is_domestic
+from almond.core.records import get_cache_dir
 
 # 单次尝试秒数：代理挂起时要快点认输，直连给慢 CDN 留余量
 IMG_TIMEOUT_PROXY = 5

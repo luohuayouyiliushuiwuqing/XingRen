@@ -1,9 +1,9 @@
 """主项目 Web 看板服务：Raindrop 风格书签卡片，默认监听 0.0.0.0:4000。
 
-数据存 SQLite（仓库根 metadata.db）；抓取复用 xingren.core.fetcher 的三级降级链。
+数据存 SQLite（仓库根 metadata.db）；抓取复用 almond.core.fetcher 的三级降级链。
 
-用法：python -m xingren.web.webui.server [--host 0.0.0.0] [--port 4000]   （在仓库根目录执行）
-     或安装后直接 xingren-webui [--host …] [--port …]
+用法：python -m almond.web.webui.server [--host 0.0.0.0] [--port 4000]   （在仓库根目录执行）
+     或安装后直接 almond-webui [--host …] [--port …]
 """
 
 import json
@@ -11,17 +11,17 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from xingren.core.fetcher import get_metadata
-from xingren.core.proxy import detect_proxy
-from xingren.core.records import (
+from almond.core.fetcher import get_metadata
+from almond.core.proxy import detect_proxy
+from almond.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
     get_domain_need_proxy, get_storage_paths, insert_quick_records,
     list_domains, list_proxy_domains, list_proxy_rules, list_records, list_tags,
     match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
     set_storage_dir, set_title, update_domain, upsert_proxy_rule, upsert_record,
 )
-from xingren.web.webui import fsbrowse, imgproxy
-from xingren.web.webui.staticfiles import CONTENT_TYPES, resolve_static
+from almond.web.webui import fsbrowse, imgproxy
+from almond.web.webui.staticfiles import CONTENT_TYPES, resolve_static
 
 def effective_proxy(url: str, global_proxy: str) -> str | None:
     """代理优先级：URL 模式规则 > 域名规则 > 全局代理默认值。

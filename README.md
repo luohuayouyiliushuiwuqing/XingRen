@@ -1,4 +1,4 @@
-# XingRen — 网页元数据抓取看板
+# Almond — 网页元数据抓取看板
 
 抓取网页元数据（标题、缩略图、favicon、结构化详情字段），以 Raindrop 风格的卡片看板展示。
 基于 [Scrapling](https://github.com/D4Vinci/Scrapling)（TLS 指纹伪装 + 三级降级抓取），数据存 SQLite，界面为本地 Web 应用。
@@ -17,9 +17,9 @@
 ## 目录结构
 
 ```
-XingRen/
+Almond/
 ├── pyproject.toml         # 打包配置：依赖来源、控制台入口
-├── xingren/               # Python 包（绝对 import，无 sys.path hack）
+├── almond/               # Python 包（绝对 import，无 sys.path hack）
 │   ├── core/              # 与界面无关的核心逻辑
 │   │   ├── fetcher.py     # 核心：三级降级抓取 + 元数据/详情提取
 │   │   ├── fields.py      # 「标签: 值」字段解析（看板与试验台共用）
@@ -36,7 +36,7 @@ XingRen/
 │           └── index.html / style.css / app.js / fixture.html
 ├── metadata.db            # SQLite 数据库（运行时生成，已 gitignore，位置可在界面迁移）
 ├── config.json            # 记录当前存储目录（运行时生成，已 gitignore）
-├── docs/                  # git 子模块（→ XingRenMD）：CHANGE.md 变更记录 · TODO.md 待办 · CLAUDE.md 使用指引
+├── docs/                  # git 子模块（→ AlmondMD）：CHANGE.md 变更记录 · TODO.md 待办 · CLAUDE.md 使用指引
 ├── extension/             # 浏览器插件（Chrome/Edge MV3）：当前页 / 标签页一键收藏进看板，加载即用
 └── requirements.txt       # 全量 pinned 依赖（同时是 pyproject 的依赖来源）
 ```
@@ -44,8 +44,8 @@ XingRen/
 ## 环境准备
 
 ```bash
-# 1. conda 环境（本项目使用 xingren）
-conda activate xingren
+# 1. conda 环境（本项目使用 almond）
+conda activate almond
 
 # 2. 安装依赖（可加清华源）
 pip install -r requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
@@ -63,13 +63,13 @@ pip install -e . --no-deps --no-build-isolation --no-index
 ### 看板（主界面）
 
 ```bash
-xingren-webui                              # 默认 http://0.0.0.0:4000/
-xingren-webui --port 8000                  # 自定义端口
-xingren-webui --host 127.0.0.1             # 只监听本机（不对外暴露）
-xingren-webui --host 0.0.0.0 --port 4000   # 显式指定
+almond-webui                              # 默认 http://0.0.0.0:4000/
+almond-webui --port 8000                  # 自定义端口
+almond-webui --host 127.0.0.1             # 只监听本机（不对外暴露）
+almond-webui --host 0.0.0.0 --port 4000   # 显式指定
 
 # 免安装方式（必须在仓库根目录执行）
-python -m xingren.web.webui.server [--host 0.0.0.0] [--port 4000]
+python -m almond.web.webui.server [--host 0.0.0.0] [--port 4000]
 ```
 
 - 顶部粘贴 URL 回车「添加」；右侧搜索框过滤；`☰` 收起 / 展开左侧栏
@@ -83,10 +83,10 @@ python -m xingren.web.webui.server [--host 0.0.0.0] [--port 4000]
 ### 选择器试验台（演示）
 
 ```bash
-xingren-demo                        # http://127.0.0.1:8765/
+almond-demo                        # http://127.0.0.1:8765/
 
 # 免安装方式（必须在仓库根目录执行）
-python -m xingren.web.demo.server
+python -m almond.web.demo.server
 ```
 
 输入网址 + CSS 选择器（如 `.space-y-2 > *`），服务端抓取并展示匹配元素与字段卡片；
@@ -124,8 +124,8 @@ python -m xingren.web.demo.server
 
 - **代理**：映射只表达「要不要走代理」，地址统一填在「代理」面板的全局代理里（Clash 等，默认 `http://127.0.0.1:7897`，打开页面自动探测本机 7889-7899）。优先级 **URL 模式规则 > 域名规则 > 全局默认**，命中即为强制值（含「强制直连」）；国内域名自动跳过代理，代理不可用会自动回退直连再试整条降级链
 - **合并规则**：按 URL 去重；抓取失败保留原记录；页面无标题时不覆盖手动补充的标题
-- **数据文件**：本地私有数据（`metadata.db`、图片缓存 `cache/img/` 等）统一放在**存储目录**——默认仓库根（已 gitignore），可在界面「存储」面板点选目录整体迁移，立即生效；位置记录在仓库根 `config.json`（已 gitignore）。非 editable 安装可用环境变量 `XINGREN_DATA_DIR` 指定基础目录
-- **入口约定**：只支持 `xingren-webui` / `xingren-demo` 或 `python -m …`（后者需在仓库根目录执行）；不要直接 `python xingren/web/webui/server.py`，它依赖 `sys.path`，行为随安装状态变化
+- **数据文件**：本地私有数据（`metadata.db`、图片缓存 `cache/img/` 等）统一放在**存储目录**——默认仓库根（已 gitignore），可在界面「存储」面板点选目录整体迁移，立即生效；位置记录在仓库根 `config.json`（已 gitignore）。非 editable 安装可用环境变量 `ALMOND_DATA_DIR` 指定基础目录
+- **入口约定**：只支持 `almond-webui` / `almond-demo` 或 `python -m …`（后者需在仓库根目录执行）；不要直接 `python almond/web/webui/server.py`，它依赖 `sys.path`，行为随安装状态变化
 - **监听地址**：看板默认 `0.0.0.0:4000`（所有网卡，便于远程访问），可用 `--host` / `--port` 覆盖；选择器试验台仍固定 `127.0.0.1:8765`
 - **⚠ 无鉴权**：上表全部接口都对外可达。`POST /api/fetch` 与 `GET /api/img` 会让**服务器**去抓取任意 URL（SSRF），`DELETE /api/record` 可直接删库，`GET /api/fs/list` 可列出服务器任意目录、`POST /api/storage-dir` 可把数据库搬走或重建。绑到 `0.0.0.0` 意味着任何能连上该端口的人都能调用这些接口。仅本机使用请加 `--host 127.0.0.1`；确需对外暴露时，在云安全组 / 防火墙上只放行可信 IP（云主机上还需放行安全组与 `firewalld`/`ufw` 的 4000 端口，否则外部访问会超时）；token 鉴权见 [docs/TODO.md](docs/TODO.md) 第 2 项
 - **调试抓取链**：抓取日志会打印到启动命令所在的终端

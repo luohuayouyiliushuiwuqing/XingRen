@@ -1,6 +1,6 @@
-# 行人看板 · 浏览器插件（Chrome / Edge，MV3）
+# Almond看板 · 浏览器插件（Chrome / Edge，MV3）
 
-一键把**当前页**或**当前窗口的全部标签页**收进行人（XingRen）元数据看板
+一键把**当前页**或**当前窗口的全部标签页**收进Almond
 ——省掉「复制 URL → 切窗口 → 粘贴」，浏览器已经知道的 title / favicon / og:image
 直接送进看板。
 
@@ -12,7 +12,7 @@
 
 1. 打开 `chrome://extensions`（Edge 用 `edge://extensions`）
 2. 右上角打开**开发者模式**
-3. 点**加载已解压的扩展程序** → 选择本目录（`XingRen/extension/`）
+3. 点**加载已解压的扩展程序** → 选择本目录（`Almond/extension/`）
 4. 工具栏出现拼图图标，钉到工具栏即可使用
 
 无需构建、无需安装依赖；改完代码在扩展页点「重新加载」即生效。

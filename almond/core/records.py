@@ -13,10 +13,10 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from urllib.parse import urlparse
 
-# 仓库根：parents[0]=core, [1]=xingren, [2]=仓库根（XINGREN_DATA_DIR 可兜底覆盖）。
+# 仓库根：parents[0]=core, [1]=almond, [2]=仓库根（ALMOND_DATA_DIR 可兜底覆盖）。
 # config.json 固定放这里——它只记录「本地数据放在哪个存储目录」，必须跟着代码走。
 # 数据库、图片缓存等本地私有数据统一放在「存储目录」：默认仓库根，UI 里可整体迁移。
-_BASE_DIR = Path(os.environ.get("XINGREN_DATA_DIR") or Path(__file__).resolve().parents[2])
+_BASE_DIR = Path(os.environ.get("ALMOND_DATA_DIR") or Path(__file__).resolve().parents[2])
 CONFIG_PATH = _BASE_DIR / "config.json"
 
 

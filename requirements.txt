@@ -1,4 +1,4 @@
-# XingRen 项目依赖：scrapling[fetchers] 的完整传递闭包（锁定当前版本）
+# Almond 项目依赖：scrapling[fetchers] 的完整传递闭包（锁定当前版本）
 # 安装：pip install -r requirements.txt
 # 清华源：  pip install -r requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 # 安装依赖后还需下载浏览器内核（DynamicFetcher / StealthyFetcher 用）：
