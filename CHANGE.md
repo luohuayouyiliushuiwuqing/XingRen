@@ -8,6 +8,51 @@
 
 ---
 
+## 2026-10-09 11:27:43 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 修复「每次抓取到数据页面就闪一下」——单条记录改就地补丁，不再整页重绘（`app.js`，1 文件）
+
+  **根因**：三处抓取完成路径都直接 `render()`——
+
+  1. `fetchRecord()`（添加 / 重新抓取 / 详情补抓）
+  2. 后台批量提取（原先 `scheduleExtractRender()` 每 500ms 一次）
+  3. `submitRename()`
+
+  `render()` 第一行是 `board.innerHTML = ""`，把当前**全部卡片连同已加载的图片
+  一起拔掉再插回去**：新 `<img>` 要重新解码、`content-visibility` 的卡片要重新
+  过一遍首帧，肉眼就是整页一闪。批量提取期间等于每 500ms 闪一次。
+
+  **修法（`app.js` 拆分 `createCard`）**：
+
+  - 新增 `fillCard(card, record)`：只动会变的部分——标题文字与 `pending` 类、
+    状态点 class、封面/favicon、标签徽标
+  - 新增 `updateCard(record)`：按 `card.dataset.url` 定位后调 `fillCard`，
+    **完全不碰 `render()`**；卡片不存在（该分组懒建中）直接返回，
+    建卡时自然会用 `state.records` 里的最新数据
+  - `setCover()` / `setFavicon()`：**`src` 没变就一个属性都不写**——
+    换 `<img>` 节点 = 重新解码 = 闪白；新建封面用
+    `insertBefore(封面, favicon)` 保证角标仍在上层
+  - 按钮闭包从 `record`（建卡那一刻的旧对象）改为 **`card.__record`**（`fillCard` 每次更新），
+    否则就地补丁后点「详情 / 重命名」拿到的是过期数据
+  - 仍走整页 `render()` 的场景保持不变：筛选/分组切换、删除、标签增删、
+    导入阶段一入库——这些内容真的变了
+
+  **验收**（注入 `window.render` 计数器 + 节点标记，临时实例 4100）：
+
+  | 操作 | render 次数 | 卡片节点 | 结果 |
+  | --- | --- | --- | --- |
+  | 重新抓取 | **0** | 同一节点（marker 存活） | 标题 `（标题待补充）→ Example Domain`，点 `pending → ok` |
+  | 重命名 | **0** | 同一节点 | 标题就地改为新值 |
+  | 后台批量提取 3 条 | **1**（仅阶段一 `loadRecords` 入库那一次） | — | 3 条标题全部补齐，进度条照常 |
+  | `updateCard` 打在懒建分组的记录上 | **0** | — | 不报错、不重绘 |
+  | 分组视图就地补丁 | **0** | 同一节点 | `cover` 不重复 |
+
+  另测 `fillCard` **幂等**：对带封面+favicon 的卡片连续填两次，
+  `thumb.innerHTML` 逐字节相同、`cover=1 favicon=1`（不产生重复节点）。
+  全程 0 页面报错；测试数据（4 条 example/iana）已清理。
+
 ## 2026-10-09 11:06:34 +0800
 
 - **用户**: haijie yin

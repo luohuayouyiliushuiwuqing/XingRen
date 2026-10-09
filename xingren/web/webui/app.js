@@ -95,17 +95,85 @@ function el(tag, className, text) {
   return node;
 }
 
+function imgSrc(u) {
+  const proxy = state.globalProxy;
+  return "/api/img?src=" + encodeURIComponent(u) +
+    (proxy ? "&proxy=" + encodeURIComponent(proxy) : "");
+}
+
+/* src 没变就绝不碰 <img> 节点——换节点要重新解码，肉眼就是一闪白 */
+function setCover(open, record) {
+  let img = open.querySelector(".cover");
+  if (!record.thumbnail) { if (img) img.remove(); return; }
+  const src = imgSrc(record.thumbnail);
+  if (!img) {
+    img = new Image();
+    img.className = "cover";
+    img.loading = "lazy";
+    img.onerror = () => img.remove();
+    open.insertBefore(img, open.querySelector(".favicon"));  // 封面要压在 favicon 下面
+  }
+  if (img.getAttribute("src") !== src) img.src = src;
+}
+
+function setFavicon(open, record) {
+  let fav = open.querySelector(".favicon");
+  const want = record.favicon && record.favicon.startsWith("http") ? record.favicon : "";
+  if (!want) { if (fav) fav.remove(); return; }
+  const src = imgSrc(want);
+  if (!fav) {
+    fav = new Image();
+    fav.className = "favicon";
+    fav.loading = "lazy";
+    fav.onerror = () => fav.remove();
+    open.appendChild(fav);   // 角标在最上层
+  }
+  if (fav.getAttribute("src") !== src) fav.src = src;
+}
+
+/* 卡片里会随抓取结果变化的部分。抓取完成、改名、批量提取都只动这些节点，
+   不重建整张卡也不重绘看板——原先每次都 render()，board.innerHTML="" 把
+   几百张卡连同图片全部拔掉再插回去，就是「抓到数据页面闪一下」的来源 */
+function fillCard(card, record) {
+  card.__record = record;   // 按钮闭包从这里取最新记录，别用建卡时的旧对象
+
+  const title = card.querySelector(".title");
+  title.textContent = record.title || "（标题待补充）";   // 没标题就灰着，别装作有标题
+  title.classList.toggle("pending", !record.title);
+
+  card.querySelector(".dot").className =
+    "dot " + (!record.fetched ? "pending" : record.success ? "ok" : "fail");
+
+  const open = card.querySelector(".open");
+  setCover(open, record);
+  setFavicon(open, record);
+
+  const row = card.querySelector(".domain");
+  for (const b of row.querySelectorAll(".tag-badge")) b.remove();
+  if (record.tags && record.tags.length) {
+    for (const t of record.tags) row.appendChild(el("span", "tag-badge", t.name));
+  }
+}
+
+/* 单条记录更新：就地打补丁，不整页重绘 */
+function updateCard(record) {
+  const card = document.querySelector(`#board .card[data-url="${CSS.escape(record.url)}"]`);
+  if (!card) return;                // 所在分组还没建卡（懒建），建的时候自然用最新数据
+  if (!matchesFilter(record)) {     // 改名/抓取后掉出当前筛选 → 只能整页重排
+    render();
+    return;
+  }
+  fillCard(card, record);
+}
+
 function createCard(record) {
   const card = el("div", "card");
+  card.dataset.url = record.url;    // 单条更新按这个定位
   const host = hostOf(record.url);
-  const pending = !record.title;   // 没标题（TXT 快照/抓取未完成）就灰着，别装作有标题
-  const proxy = state.globalProxy;
-  const imgSrc = (u) =>
-    "/api/img?src=" + encodeURIComponent(u) +
-    (proxy ? "&proxy=" + encodeURIComponent(proxy) : "");
 
   /* 缩略图：图 → 字母占位；可选 favicon 角标（图片走服务端代理加载）。
-     打开链接用内部 <a>，操作按钮是它的兄弟节点，避免点按钮时触发跳转。 */
+     打开链接用内部 <a>，操作按钮是它的兄弟节点，避免点按钮时触发跳转。
+     封面/favicon 与标题、标签一样交给末尾的 fillCard —— 抓取回来才有。 */
   const thumb = el("div", "thumb");
   const open = el("a", "open");
   open.href = record.url;
@@ -113,64 +181,43 @@ function createCard(record) {
   open.rel = "noopener";
   open.title = record.url;
   open.appendChild(el("span", "letter", host.slice(0, 1).toUpperCase()));
-  if (record.thumbnail) {
-    const img = new Image();
-    img.className = "cover";
-    img.loading = "lazy";
-    img.src = imgSrc(record.thumbnail);
-    img.onerror = () => img.remove();
-    open.appendChild(img);
-  }
-  if (record.favicon && record.favicon.startsWith("http")) {
-    const fav = new Image();
-    fav.className = "favicon";
-    fav.loading = "lazy";
-    fav.src = imgSrc(record.favicon);
-    fav.onerror = () => fav.remove();
-    open.appendChild(fav);
-  }
   thumb.appendChild(open);
 
   /* 右上角快捷按钮（详情 / 重新抓取） */
+  /* 按钮闭包一律取 card.__record（fillCard 会更新它）：
+     否则就地补丁后，点「详情/重命名」拿到的还是建卡那一刻的旧数据 */
   const topActions = el("div", "thumb-actions");
   const detailBtn = el("button", null, "详情");
-  detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openDetail(record); });
+  detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openDetail(card.__record); });
   const refreshBtn = el("button", null, "重新抓取");
-  refreshBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fetchRecord(record.url); });
+  refreshBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); fetchRecord(card.__record.url); });
   topActions.append(detailBtn, refreshBtn);
   thumb.appendChild(topActions);
 
   /* 底部操作条（重命名 / 标签 / 删除） */
   const actions = el("div", "actions");
   const renameBtn = el("button", null, "重命名");
-  renameBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openRename(record); });
+  renameBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openRename(card.__record); });
   const tagBtn = el("button", null, "标签");
-  tagBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openTag(record); });
+  tagBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openTag(card.__record); });
   const deleteBtn = el("button", null, "删除");
-  deleteBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); removeRecord(record); });
+  deleteBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); removeRecord(card.__record); });
   actions.append(renameBtn, tagBtn, deleteBtn);
   thumb.appendChild(actions);
 
-  /* 文本区 */
+  /* 文本区：结构建一次，标题/状态点/徽标由 fillCard 填 */
   const body = el("div", "body");
-  const title = el(
-    "a",
-    "title" + (pending ? " pending" : ""),
-    record.title || "（标题待补充）"
-  );
+  const title = el("a", "title");
   title.href = record.url;
   title.target = "_blank";
   title.rel = "noopener";
   const domainRow = el("div", "domain");
-  const dot = !record.fetched ? "pending" : (record.success ? "ok" : "fail");
-  domainRow.appendChild(el("span", "dot " + dot));
+  domainRow.appendChild(el("span", "dot"));
   domainRow.appendChild(el("span", null, host));
-  if (record.tags && record.tags.length) {
-    for (const t of record.tags) domainRow.appendChild(el("span", "tag-badge", t.name));
-  }
   body.append(title, domainRow);
 
   card.append(thumb, body);
+  fillCard(card, record);
   return card;
 }
 
@@ -574,7 +621,7 @@ async function fetchRecord(url) {
       return null;
     }
     upsert(data.record);
-    render();
+    updateCard(data.record);   // 就地补丁，别整页重绘（会闪）
     if (state.detailTarget && state.detailTarget.url === data.record.url) {
       openDetail(data.record);
     }
@@ -626,7 +673,7 @@ async function submitRename() {
     const data = await resp.json();
     if (data.ok) {
       record.title = title;
-      render();
+      updateCard(record);   // 改名只动标题文字，不整页重绘
       setStatus(`已重命名：${title || "(空)"}`);
     } else {
       setStatus("重命名失败：" + data.error, "err");
@@ -1006,13 +1053,6 @@ function parseBookmarks(text, fileName) {
 
 /* ---------- 导入阶段二：后台提取信息（链接已全部入库，这里只补标题/详情） ---------- */
 const extractQueue = { urls: [], total: 0, ok: 0, fail: 0, running: false };
-let extractRenderTimer = 0;
-
-function scheduleExtractRender() {
-  // 一条一渲会把几千条的看板拖垮：限流到每 500ms 最多一次
-  if (extractRenderTimer) return;
-  extractRenderTimer = setTimeout(() => { extractRenderTimer = 0; render(); }, 500);
-}
 
 function enqueueExtract(urls, note) {
   const queued = new Set(extractQueue.urls);
@@ -1049,19 +1089,21 @@ async function runExtract() {
           body: JSON.stringify({ url, proxy: state.globalProxy }),
         });
         const data = await resp.json();
-        if (data.ok) { upsert(data.record); extractQueue.ok++; }
-        else extractQueue.fail++;
+        if (data.ok) {
+          upsert(data.record);
+          extractQueue.ok++;
+          // 就地补丁：批量提取期间不整页重绘（原先每 500ms 闪一次）
+          updateCard(data.record);
+        } else extractQueue.fail++;
       } catch {
         extractQueue.fail++;
       }
-      scheduleExtractRender();
     }
   };
 
   await Promise.all(Array.from({ length: 5 }, () => worker()));
   extractQueue.running = false;
   if (extractQueue.urls.length) { runExtract(); return; }  // 等待期间又入了新任务
-  render();
   setStatus(
     `提取完成：成功 ${extractQueue.ok}，失败 ${extractQueue.fail}（共 ${extractQueue.total} 条）`,
     extractQueue.ok ? "" : "err"
