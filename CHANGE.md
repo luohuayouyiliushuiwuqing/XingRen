@@ -8,6 +8,103 @@
 
 ---
 
+## 2026-10-09 11:06:34 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 修复第 2/3 级抓取器起不来——patchright 降级到 1.62.3 对齐本机 chromium 内核（`requirements.txt` / `TODO.md`，2 文件 + 环境）
+
+  **现象**（用户日志）：`抓取失败（Error: BrowserType.launch_persistent_context:
+  Executable doesn't exist at ~/.cache/ms-playwright/chromium-1243/…），
+  尝试下一抓取器…` —— `DynamicFetcher` / `StealthyFetcher` 每次都直接抛异常，
+  **三级降级实际只剩第一级 `Fetcher` 在跑**，反 Cloudflare / JS 渲染形同虚设。
+
+  **根因（不是「忘了装」）**：
+
+  - `patchright 1.63.0` 要 chromium-**1243**，本机缓存里只有 **1234**
+  - 而 `patchright install chromium` 在这台机器上**被直接拒绝**：
+    `ERROR: Patchright does not support chromium on ubuntu20.04-x64` —— 想装也装不上
+  - 关键线索：本机的 `chromium-1234` 正是 **playwright 1.62.0** 的内核，
+    而 `requirements.txt` 里就同时钉着 `playwright==1.62.0` 和 `patchright==1.63.0`
+    —— **两者内核版本本来就没对齐**，与是否执行过 `patchright install` 无关
+
+  **修法**：`patchright` **1.63.0 → 1.62.3**（与 playwright 1.62 同内核线），
+  `requirements.txt` 第 20 行同步改钉 `patchright==1.62.3`；改完
+  `patchright install chromium` 变成 no-op（内核已在），无需下载、不碰系统。
+
+  **验收**：
+
+  - `patchright install chromium` exit 0、无报错
+  - 直连调 `DynamicFetcher.fetch("https://example.com/")` → **status=200**
+  - 直连调 `StealthyFetcher.fetch(...)` → **status=200**
+  - `launch_persistent_context(headless=True)` 起浏览器、`page.title()` 取到 `Example Domain`
+  - `import scrapling.fetchers` 不会预载 patchright（懒加载）——
+    所以**已在跑的旧进程里装的是 1.63 的模块，必须重启服务**才会用上 1.62.3
+
+  `TODO.md` #7 已移入「已完成」（记了上面这套根因，免得下次又去跑那条装不上的命令）。
+
+## 2026-10-09 10:52:31 +0800
+
+- **用户**: haijie yin
+- **系统**: Ubuntu 20.04.6 LTS (Focal Fossa) · Linux 5.4.0-21-generic x86_64 · igs-Y
+- **内容**: 导入改两阶段——先把链接全部入库，再后台逐条提取信息（`app.js` / `records.py` / `TODO.md`，3 文件）
+
+  **规则**：`先导入链接 → 再提取信息`。原来只有 HTML 走快照，TXT 是
+  「抓一条写一条」，5000 条 TXT 要抓几个小时且中途关页面会丢链接。
+
+  **1. 阶段一：链接全部入库（`app.js` `importFromFile` 重写）**
+
+  - HTML / TXT **统一走 `POST /api/records/quick`**：单事务、不联网，5000 条秒级
+  - 入库前先取 `state.records` 快照算出「本次新增」，入库后立刻
+    `loadRecords()` 看板即可用；**`importBtn` 在阶段一结束就恢复**，不等提取
+
+  **2. 阶段二：后台提取队列**
+
+  - 新增 `extractQueue` + `enqueueExtract()` + `runExtract()`：5 并发，
+    状态栏实时显示 `提取信息 x/y（成功 m，失败 n）`，跑完报 `提取完成`
+  - 期间可继续操作看板、再导入新文件（新任务追加进同一队列）
+  - **限流渲染**：`scheduleExtractRender()` 每 500ms 最多重绘一次——
+    原实现一条一 `render()`，几千条会把看板拖垮
+  - **TXT 才进队列**（只有 URL，不抓就没标题）；HTML 的标题/封面文件里已有，
+    详情字段维持你之前定的「打开时按需抓」，5000 条全抓不划算
+
+  **3. 配套修复**
+
+  - `records.upsert_record()`：抓取失败时**仍置 `fetched=1`**，内容一个字不覆盖。
+    这一列的语义本就是「已抓取/**尝试过**」——不改的话快照导入的链接提取失败后
+    `fetched` 还是 0，状态点永远灰着，看着像还在排队
+  - `createCard` 的 `pending` 判定 `!success && !title` → **`!title`**：
+    TXT 快照（`success=1`）原先不算 pending，会黑字显示「（标题待补充）」
+  - `TODO.md` 新增 **#7**：本机 patchright 内核 1243 vs 已装 1234，
+    `DynamicFetcher`/`StealthyFetcher` 起不来，三级降级只剩第一级（见下）
+
+  **4. 验收**（临时实例 4100，4 条 TXT + 2 条 HTML）
+
+  - TXT 阶段一抓拍：4 条**全部入库且 `fetched=[false×4]`**，状态
+    `导入链接中…（4 条，不联网）`，导入按钮已可用 —— 证明链接先落库、尚未抓取
+  - TXT 阶段二：`提取完成：成功 4，失败 0（共 4 条）`，
+    4 条 `fetched=true` 且标题齐（`Example Domain`×3 / `Internet Assigned Numbers Authority`）
+  - 失败路径（4 条 `localhost` 连不上的 URL）：`fetched=true`、标题保留空 —— 说明
+    `upsert_record` 失败也标记了尝试过
+  - HTML：状态 `已入库 2 条；标题/封面已从文件读取…`，2 条 `fetched=false`、
+    标题与 `TAGS` 正确解析，**期间 `/api/fetch` 调用 0 次**
+  - 0 页面报错；测试数据（6 条 + 标签「测试」+ 相关域名）已清理，库剩 1114 条
+
+  **勘误**：`record_tags` 的外键列叫 **`record_url`**（不是 `url`）。
+  注入测试数据那批在对话里给的清理 SQL 写成了 `rt.url`，**执行会报
+  `no such column: url`**。正确的清库语句（按 URL 后缀定位，顺序无关）：
+
+  ```sql
+  BEGIN;
+  DELETE FROM record_tags WHERE record_url LIKE 'https://site%.test/%'
+                          OR record_url LIKE 'https://mini%.test/%';
+  DELETE FROM records      WHERE url       LIKE 'https://site%.test/%'
+                              OR url       LIKE 'https://mini%.test/%';
+  DELETE FROM domains WHERE name LIKE '%.test';
+  DELETE FROM tags WHERE name IN ('测试数据', '测试A', '测试B');
+  COMMIT;
+  ```
+
 ## 2026-10-09 10:42:06 +0800
 
 - **用户**: haijie yin

@@ -98,7 +98,7 @@ function el(tag, className, text) {
 function createCard(record) {
   const card = el("div", "card");
   const host = hostOf(record.url);
-  const pending = !record.success && !record.title;
+  const pending = !record.title;   // 没标题（TXT 快照/抓取未完成）就灰着，别装作有标题
   const proxy = state.globalProxy;
   const imgSrc = (u) =>
     "/api/img?src=" + encodeURIComponent(u) +
@@ -1004,72 +1004,112 @@ function parseBookmarks(text, fileName) {
   return { isHtml: false, items };
 }
 
+/* ---------- 导入阶段二：后台提取信息（链接已全部入库，这里只补标题/详情） ---------- */
+const extractQueue = { urls: [], total: 0, ok: 0, fail: 0, running: false };
+let extractRenderTimer = 0;
+
+function scheduleExtractRender() {
+  // 一条一渲会把几千条的看板拖垮：限流到每 500ms 最多一次
+  if (extractRenderTimer) return;
+  extractRenderTimer = setTimeout(() => { extractRenderTimer = 0; render(); }, 500);
+}
+
+function enqueueExtract(urls, note) {
+  const queued = new Set(extractQueue.urls);
+  const add = urls.filter((u) => u && !queued.has(u));
+  if (!add.length) { setStatus(note || "没有需要提取的链接"); return; }
+  if (!extractQueue.running) {
+    extractQueue.total = extractQueue.ok = extractQueue.fail = 0;  // 新一轮重新计数
+  }
+  extractQueue.urls.push(...add);
+  extractQueue.total += add.length;
+  setStatus(
+    `${note ? note + "；" : ""}待提取 ${extractQueue.total - extractQueue.ok - extractQueue.fail} 条`,
+    "busy"
+  );
+  runExtract();
+}
+
+async function runExtract() {
+  if (extractQueue.running) return;
+  extractQueue.running = true;
+
+  const worker = async () => {
+    while (extractQueue.urls.length) {
+      const url = extractQueue.urls.shift();
+      const done = extractQueue.total - extractQueue.urls.length;
+      setStatus(
+        `提取信息 ${done}/${extractQueue.total}（成功 ${extractQueue.ok}，失败 ${extractQueue.fail}）`,
+        "busy"
+      );
+      try {
+        const resp = await fetch("/api/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, proxy: state.globalProxy }),
+        });
+        const data = await resp.json();
+        if (data.ok) { upsert(data.record); extractQueue.ok++; }
+        else extractQueue.fail++;
+      } catch {
+        extractQueue.fail++;
+      }
+      scheduleExtractRender();
+    }
+  };
+
+  await Promise.all(Array.from({ length: 5 }, () => worker()));
+  extractQueue.running = false;
+  if (extractQueue.urls.length) { runExtract(); return; }  // 等待期间又入了新任务
+  render();
+  setStatus(
+    `提取完成：成功 ${extractQueue.ok}，失败 ${extractQueue.fail}（共 ${extractQueue.total} 条）`,
+    extractQueue.ok ? "" : "err"
+  );
+}
+
+/* ---------- 导入：先把链接全部入库，再提取信息 ---------- */
 async function importFromFile(file) {
   const text = await file.text();
   const { isHtml, items } = parseBookmarks(text, file.name);
   if (!items.length) { setStatus("文件中未找到 http 开头的 URL", "err"); return; }
 
+  // 必须在入库前取快照，才能知道哪些是这次新增的
+  const existing = new Set(state.records.map((r) => r.url));
+  const fresh = items.filter((i) => !existing.has(i.url));
+
   $("importBtn").disabled = true;
 
-  /* ── HTML 快照导入：标题/封面/标签现成，完全不联网，5000 条秒级 ── */
+  /* ── 阶段一：链接全部入库（快照，不联网，5000 条秒级）── */
+  let data;
+  try {
+    setStatus(`导入链接中…（${items.length} 条，不联网）`, "busy");
+    const resp = await fetch("/api/records/quick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    data = await resp.json();
+    if (!data.ok) { setStatus("导入失败：" + data.error, "err"); return; }
+  } catch (e) {
+    setStatus("导入失败：" + e.message, "err");
+    return;
+  } finally {
+    $("importBtn").disabled = false;   // 链接一入库界面立刻可用，不等提取
+  }
+
+  await loadRecords();
+  const parts = [`已入库 ${data.inserted} 条`];
+  if (data.skipped) parts.push(`跳过 ${data.skipped} 条（已存在）`);
+
+  /* ── 阶段二：再提取信息 ──
+     TXT 只有 URL，不抓就没有标题 → 后台队列逐条补，不阻塞看板、可继续操作；
+     HTML 的标题/封面文件里已有，详情字段仍按打开时按需抓（5000 条全抓不划算） */
   if (isHtml) {
-    try {
-      setStatus(`快照导入中…（${items.length} 条，不联网）`, "busy");
-      const resp = await fetch("/api/records/quick", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
-      });
-      const data = await resp.json();
-      if (!data.ok) { setStatus("快照导入失败：" + data.error, "err"); return; }
-      await loadRecords();
-      const parts = [`快照导入完成：新增 ${data.inserted} 条`];
-      if (data.skipped) parts.push(`跳过 ${data.skipped} 条（已存在）`);
-      parts.push("详情字段在打开时按需抓取");
-      setStatus(parts.join("，"));
-    } catch (e) {
-      setStatus("快照导入失败：" + e.message, "err");
-    } finally {
-      $("importBtn").disabled = false;
-    }
+    setStatus(`${parts.join("，")}；标题/封面已从文件读取，详情字段打开时按需抓取`);
     return;
   }
-
-  /* ── TXT：只有 URL，保留原有逐条抓取 ── */
-  const urls = items.map(i => i.url);
-  const proxy = state.globalProxy;
-  const existing = new Set(state.records.map(r => r.url));
-  const toFetch = urls.filter(u => !existing.has(u));
-  const skipped = urls.length - toFetch.length;
-  let done = 0, ok = 0, fail = 0;
-  const CONCURRENCY = 5;
-
-  async function worker() {
-    while (done < toFetch.length) {
-      const i = done++;
-      setStatus(`导入中 ${i + 1}/${toFetch.length}（成功 ${ok}，失败 ${fail}，跳过 ${skipped}）`, "busy");
-      try {
-        const resp = await fetch("/api/fetch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: toFetch[i], proxy }),
-        });
-        const data = await resp.json();
-        if (data.ok) { upsert(data.record); ok++; }
-        else fail++;
-      } catch { fail++; }
-      render();
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toFetch.length) }, () => worker()));
-
-  $("importBtn").disabled = false;
-  const parts = [`共 ${urls.length} 条`];
-  if (ok) parts.push(`成功 ${ok}`);
-  if (fail) parts.push(`失败 ${fail}`);
-  if (skipped) parts.push(`跳过 ${skipped}（已存在）`);
-  setStatus(`导入完成：${parts.join("，")}`, ok > 0 ? "" : "err");
+  enqueueExtract(fresh.map((i) => i.url), parts.join("，"));
 }
 
 /* ---------- 存储目录（数据库、缓存等本地私有数据的统一存放处） ---------- */

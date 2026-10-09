@@ -44,6 +44,19 @@
        README 用法与安全说明、CHANGE.md 11:00:16 那条记录。
        （`CLAUDE.md` 未入库——按约定它不参与提交，其同步内容已在工作区。）
 
+- [x] **7. 本机 patchright 内核版本对不上，第 2/3 级抓取器起不来**
+       已完成（2026-10-09）。根因不是「忘了装」：`patchright 1.63.0` 要 chromium-1243，
+       而 `patchright install chromium` 在 Ubuntu 20.04 上**直接拒绝**（
+       `Patchright does not support chromium on ubuntu20.04-x64`），装不上。
+       反倒是本机已有的 `chromium-1234` 正是 **playwright 1.62.0** 的内核
+       （`requirements.txt` 里就钉着 `playwright==1.62.0`）。
+       修：把 `patchright` 降到 **1.62.3**（与 playwright 1.62 同内核版本），
+       `patchright install chromium` 即为 no-op、无需下载。
+       验收：`DynamicFetcher` / `StealthyFetcher` 实测均 `status=200`，
+       启动 PersistentContext 正常、`example.com` 标题取到。
+       **服务需重启**——patchright 是在第一次调用抓取时才 import 的，旧进程里
+       已经装了 1.63 的模块。
+
 - [x] **6. 域名下再分组（用户自定义子分组）**
        已完成。数据库加 `group_name` 列（迁移兼容已有记录）；侧边栏改为
        域名 → 子分组两级树；卡片操作条加「分组」按钮；`upsert_record`

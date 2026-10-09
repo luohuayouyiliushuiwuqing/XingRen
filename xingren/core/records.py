@@ -341,7 +341,12 @@ def upsert_record(new: dict) -> dict:
     with _db() as conn:
         old = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
         if old is not None and not new.get("success"):
-            return _row_to_record(old, _tags_for(conn, new["url"]))
+            # 抓取失败：内容一个字都不覆盖（合并规则），但要把 fetched 置 1——
+            # 这一列的语义是「已抓取/**尝试过**」。不记的话，快照导入的链接
+            # 提取失败后 fetched 仍是 0，状态点永远灰着，看着像还在排队。
+            conn.execute("UPDATE records SET fetched = 1 WHERE url = ?", (new["url"],))
+            row = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
+            return _row_to_record(row, _tags_for(conn, new["url"]))
         title = new.get("title", "") or (old["title"] if old is not None else "")
         conn.execute(
             "INSERT INTO records (url, title, thumbnail, favicon, success, details, fetched) "
