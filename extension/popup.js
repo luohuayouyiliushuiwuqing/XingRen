@@ -4,6 +4,7 @@
 "use strict";
 
 let boardUrl = DEFAULT_BOARD_URL;   // 来自 defaults.js；storage 读不到时兜底
+let closeAfter = false;             // 收藏成功后是否关标签页（勾选即记住）
 
 function $(id) {
   return document.getElementById(id);
@@ -20,11 +21,28 @@ function isHttpUrl(u) {
   return /^https?:\/\//.test(u || "");
 }
 
+/* 本地回环不收：看板自己就跑在 127.0.0.1:4000，收藏自己没有意义 */
+function isLoopback(u) {
+  try {
+    const h = new URL(u).hostname;
+    return h === "localhost" || h === "[::1]" || /^127\./.test(h);
+  } catch {
+    return false;
+  }
+}
+
+/* 收藏资格：先过 http(s)（历史/设置/插件等系统页在此出局），再排回环 */
+function isCollectible(u) {
+  return isHttpUrl(u) && !isLoopback(u);
+}
+
 async function loadSettings() {
-  const data = await chrome.storage.local.get("boardUrl");
+  const data = await chrome.storage.local.get(["boardUrl", "closeAfter"]);
   const saved = (data.boardUrl || "").trim();
   boardUrl = saved || DEFAULT_BOARD_URL;
   $("boardUrl").value = boardUrl;
+  closeAfter = !!data.closeAfter;
+  $("closeAfter").checked = closeAfter;
 }
 
 /* 单次 POST、不分片（300 条约 60~150KB，服务端一个事务 <10ms）；
@@ -90,6 +108,10 @@ async function saveCurrent() {
       setStatus("当前页不是普通网页，无法收藏", "err");
       return;
     }
+    if (isLoopback(tab.url)) {
+      setStatus("本地回环页（127.0.0.1 / localhost）跳过，不收藏", "err");
+      return;
+    }
     let extracted = { thumbnail: "", favicon: "" };
     let degraded = false;
     try {
@@ -116,6 +138,10 @@ async function saveCurrent() {
     if (ok && degraded) {
       setStatus("已收藏（读不到页面元数据，仅标题/图标）", "ok");
     }
+    /* 关当前标签会让 popup 一起消失，必须放在最后一步 */
+    if (ok && closeAfter) {
+      await chrome.tabs.remove(tab.id);
+    }
   } finally {
     btn.disabled = false;
   }
@@ -125,7 +151,7 @@ async function saveCurrent() {
 
 async function collectibleTabs() {
   const tabs = await chrome.tabs.query({ currentWindow: true });
-  return tabs.filter((t) => isHttpUrl(t.url));
+  return tabs.filter((t) => isCollectible(t.url));
 }
 
 async function saveAll() {
@@ -135,7 +161,7 @@ async function saveAll() {
     const tabs = await collectibleTabs();
     /* 只取 title + 过滤后的 favIconUrl——不注入（那要给每个标签页各注入一次），
        缺封面没关系，看板里点「详情 / 重新抓取」会补上 */
-    await submit(
+    const ok = await submit(
       tabs.map((t) => ({
         url: t.url,
         title: t.title || "",
@@ -144,6 +170,10 @@ async function saveAll() {
         tags: [],
       }))
     );
+    /* 全收成功才关；关光后窗口若空会连 popup 一起关掉，同样是最后一步 */
+    if (ok && closeAfter && tabs.length) {
+      await chrome.tabs.remove(tabs.map((t) => t.id));
+    }
   } finally {
     btn.disabled = false;
   }
@@ -171,18 +201,26 @@ async function init() {
   $("tabCount").textContent = String(tabs.length);
   $("saveAll").disabled = tabs.length === 0;
 
-  /* 受限页面（chrome://、file://、商店页…）：禁用按钮并说明原因。
+  /* 受限页面（chrome://、file://、商店页…）与本地回环页：禁用按钮并说明原因。
      反过来，把 popup.html 自己当标签页打开做自动化测试时也会走到这里——行为一致 */
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !isHttpUrl(tab.url)) {
     $("saveCurrent").disabled = true;
     $("currentHint").hidden = false;
     $("currentHint").textContent = "当前标签不是网页（chrome:// / 文件等），无法读取元数据";
+  } else if (isLoopback(tab.url)) {
+    $("saveCurrent").disabled = true;
+    $("currentHint").hidden = false;
+    $("currentHint").textContent = "本地回环页（127.0.0.1 / localhost）不收藏";
   }
 
   $("saveCurrent").addEventListener("click", saveCurrent);
   $("saveAll").addEventListener("click", saveAll);
   $("saveUrl").addEventListener("click", saveUrl);
+  $("closeAfter").addEventListener("change", async (e) => {
+    closeAfter = e.target.checked;
+    await chrome.storage.local.set({ closeAfter });
+  });
   $("boardUrl").addEventListener("keydown", (e) => {
     if (e.key === "Enter") saveUrl();
   });

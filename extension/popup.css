@@ -59,6 +59,17 @@ button.primary:hover:not(:disabled) { background: #1a5fd0; border-color: #1a5fd0
   padding: 4px 8px;
 }
 
+.close-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #57606a;
+  cursor: pointer;
+  user-select: none;
+}
+.close-opt input { margin: 0; accent-color: #1f6feb; }
+
 details { margin-top: 12px; border-top: 1px solid #eaeef2; padding-top: 8px; }
 summary { cursor: pointer; font-size: 12.5px; color: #57606a; user-select: none; }
 
