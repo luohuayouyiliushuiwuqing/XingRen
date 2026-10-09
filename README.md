@@ -36,8 +36,7 @@ XingRen/
 │           └── index.html / style.css / app.js / fixture.html
 ├── metadata.db            # SQLite 数据库（运行时生成，已 gitignore，位置可在界面迁移）
 ├── config.json            # 记录当前存储目录（运行时生成，已 gitignore）
-├── CHANGE.md              # 变更记录
-├── CLAUDE.md              # Claude Code 使用指引（约定不入库）
+├── docs/                  # git 子模块（→ XingRenMD）：CHANGE.md 变更记录 · TODO.md 待办 · CLAUDE.md 使用指引
 └── requirements.txt       # 全量 pinned 依赖（同时是 pyproject 的依赖来源）
 ```
 
@@ -127,5 +126,5 @@ python -m xingren.web.demo.server
 - **数据文件**：本地私有数据（`metadata.db`、图片缓存 `cache/img/` 等）统一放在**存储目录**——默认仓库根（已 gitignore），可在界面「存储」面板点选目录整体迁移，立即生效；位置记录在仓库根 `config.json`（已 gitignore）。非 editable 安装可用环境变量 `XINGREN_DATA_DIR` 指定基础目录
 - **入口约定**：只支持 `xingren-webui` / `xingren-demo` 或 `python -m …`（后者需在仓库根目录执行）；不要直接 `python xingren/web/webui/server.py`，它依赖 `sys.path`，行为随安装状态变化
 - **监听地址**：看板默认 `0.0.0.0:4000`（所有网卡，便于远程访问），可用 `--host` / `--port` 覆盖；选择器试验台仍固定 `127.0.0.1:8765`
-- **⚠ 无鉴权**：上表全部接口都对外可达。`POST /api/fetch` 与 `GET /api/img` 会让**服务器**去抓取任意 URL（SSRF），`DELETE /api/record` 可直接删库，`GET /api/fs/list` 可列出服务器任意目录、`POST /api/storage-dir` 可把数据库搬走或重建。绑到 `0.0.0.0` 意味着任何能连上该端口的人都能调用这些接口。仅本机使用请加 `--host 127.0.0.1`；确需对外暴露时，在云安全组 / 防火墙上只放行可信 IP（云主机上还需放行安全组与 `firewalld`/`ufw` 的 4000 端口，否则外部访问会超时）；token 鉴权见 [TODO.md](TODO.md) 第 2 项
+- **⚠ 无鉴权**：上表全部接口都对外可达。`POST /api/fetch` 与 `GET /api/img` 会让**服务器**去抓取任意 URL（SSRF），`DELETE /api/record` 可直接删库，`GET /api/fs/list` 可列出服务器任意目录、`POST /api/storage-dir` 可把数据库搬走或重建。绑到 `0.0.0.0` 意味着任何能连上该端口的人都能调用这些接口。仅本机使用请加 `--host 127.0.0.1`；确需对外暴露时，在云安全组 / 防火墙上只放行可信 IP（云主机上还需放行安全组与 `firewalld`/`ufw` 的 4000 端口，否则外部访问会超时）；token 鉴权见 [docs/TODO.md](docs/TODO.md) 第 2 项
 - **调试抓取链**：抓取日志会打印到启动命令所在的终端
