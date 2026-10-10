@@ -9,6 +9,8 @@ export const state = {
   selectedTag: null,       // null = "全部"，字符串 = 选中的标签
   sidebarExpanded: false,  // 侧栏超出部分是否已通过「更多」展开
   globalProxy: "http://127.0.0.1:7897",  // 全局代理，在「代理」面板里编辑
+  // 手填过代理地址（面板「保存」）→ 后续自动探测不再覆盖它；探测写入的值会把它复位
+  proxyManual: false,
   proxyDomains: new Set(), // 最终会走代理的域名（侧边栏标记用）
   renameTarget: null,
   tagTarget: null,         // 标签弹窗的目标记录

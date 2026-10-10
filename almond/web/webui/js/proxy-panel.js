@@ -148,6 +148,9 @@ async function renderProxyPanel() {
 export async function saveGlobalProxy() {
   const val = $("globalProxyInput").value.trim();
   state.globalProxy = val;
+  /* 手填过的地址要按住：补抓开跑前会重新探测本机代理端口，
+     没有这个标记的话，用户显式填的地址会被探测结果悄悄覆盖掉 */
+  state.proxyManual = !!val;
   setStatus(val ? `全局代理已设为 ${val}` : "已清除全局代理");
 }
 
@@ -160,6 +163,7 @@ export async function detectProxy({ fill = false, announce = true } = {}) {
     if (found) {
       if (fill) {
         state.globalProxy = found;
+        state.proxyManual = false;   // 自动探测写入的值不算手填，之后仍可被下次探测刷新
         const input = $("globalProxyInput");
         if (input) input.value = found;
       }

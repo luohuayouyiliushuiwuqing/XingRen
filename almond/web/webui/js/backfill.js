@@ -2,6 +2,7 @@
    是**强制补抓**，连抓过失败的一起重跑。两者都不改服务端，只是入队集合不同。 */
 import { updateCard } from "./cards.js";
 import { openDetail } from "./detail.js";
+import { detectProxy } from "./proxy-panel.js";
 import { loadRecords, upsert } from "./records.js";
 import { $, setStatus, state } from "./state.js";
 
@@ -213,10 +214,16 @@ export function toggleBackfill() {
 
 /* ---------- 执行 ---------- */
 
-function runBackfill() {
+async function runBackfill() {
   if (backfillState.running || backfillState.paused) return;
   if (!backfillState.urls.length) { paintButton(); return; }
   backfillState.running = true;
+
+  /* 开跑前先更新一次代理端口：页面开着期间代理可能才起来、或者换过端口，
+     拿着过期地址去抓会整轮走错路（探测 7889-7899，约 0.25s；
+     探到才写入，探不到保持原配置；面板里手填过的地址不覆盖）。
+     每轮只探一次，不逐条探。 */
+  if (!state.proxyManual) await detectProxy({ fill: true, announce: false });
 
   const worker = async () => {
     while (backfillState.urls.length && !backfillState.paused) {
