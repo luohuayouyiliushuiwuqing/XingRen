@@ -15,10 +15,11 @@ import { $, setStatus, state } from "./state.js";
 export const backfillState = {
   urls: [], total: 0, ok: 0, fail: 0, skip: 0, running: false, paused: false, note: "",
   inflight: new Set(),
-  /* forceUrls：人工「强制补抓」入队的**失败记录**（fetched=1 但 success=0）。
-     出队复查默认跳过已尝试过的记录，靠这个集合放行强制那批；
-     只记失败记录就够——强制时待抓的那部分本来就会被自动规则放行。
-     forceRun：本轮是强制开的（按钮文案显示「强制补抓」），跑完复位。 */
+  /* forceUrls：**人工点进来**要抓的 url —— 强制补抓的失败记录、多选操作条
+     「重新抓取」指定的那批（可能含已抓成功的）。出队复查默认跳过「已尝试过」的记录，
+     靠这个集合无条件放行；自动路径永远不会往它里面写（入队来源只喂 fetched=0），
+     所以「自动不重试失败记录」是由**入队来源**保证的，不是靠成功位判断。
+     forceRun：本轮是人工开的（按钮与完成文案显示「强制补抓」），跑完复位。 */
   forceUrls: new Set(),
   forceRun: false,
 };
@@ -90,10 +91,31 @@ function paintButton() {
 
 /* ---------- 入队 ---------- */
 
-export function enqueueBackfill(urls, note) {
+export function enqueueBackfill(urls, note, explicit) {
+  /* explicit = 人工点进来的（强制补抓、批量重新抓取），三件事缺一不可：
+     ① 在去重**之前**打 forceUrls 标记——已经在队里、正等着按自动规则被跳过的
+        也要放行；② forceRun=true，本轮按钮与完成文案得写「强制补抓」；
+     ③ 暂停中直接恢复——用户明确点了动作，就是让它跑 */
+  if (explicit) {
+    for (const u of urls) if (u) backfillState.forceUrls.add(u);
+    backfillState.forceRun = true;
+    if (backfillState.paused) {
+      backfillState.paused = false;
+      savePaused(false);
+    }
+  }
+
   const queued = new Set(backfillState.urls);
   const add = urls.filter((u) => u && !queued.has(u) && !backfillState.inflight.has(u));
-  if (!add.length) { if (note) setStatus(note); paintButton(); return; }
+  if (!add.length) {
+    /* 早返回也得救一把：暂停态下 workers 已经退出，队里若还排着东西，
+       没人会再拉起它——这时必须自己 runBackfill()，否则点了「重新抓取」
+       什么都不发生（队列永远停着） */
+    if (note) setStatus(note);
+    paintButton();
+    if (explicit && backfillState.urls.length && !backfillState.running) runBackfill();
+    return;
+  }
 
   // 上一轮已经跑空 → 这是新一轮，计数重算（忙时累加，别把进度条清零）。
   // 判据必须带上 urls.length：暂停时 running=false 但队列还留着上一轮的 url，
@@ -228,13 +250,15 @@ async function runBackfill() {
   const worker = async () => {
     while (backfillState.urls.length && !backfillState.paused) {
       const url = backfillState.urls.shift();
-      /* 出队复查——这里区分自动与强制：
+      /* 出队复查——自动与人工的分界：
          · 记录已被删除 → 跳过；
-         · 已尝试过（fetched=1）→ 自动入队的一律跳过，这正是「自动补抓不碰失败记录」；
-           只有人工「强制」入队的失败记录（forceUrls 命中）才放行，抓成功过的仍跳过。 */
+         · 已尝试过（fetched=1）**且不是人工点进来的** → 跳过。自动入队的只会是
+           fetched=0 的记录，所以这条等价于「自动补抓不碰失败记录」；
+           人工点进来的（forceUrls 命中：强制重试、批量重新抓取）无条件放行——
+           因此连**已抓成功**的记录也能重抓（旧规则里的 rec.success 会把它拦下） */
       const rec = state.records.find((r) => r.url === url);
       const forced = backfillState.forceUrls.delete(url);
-      if (!rec || (rec.fetched && (rec.success || !forced))) {
+      if (!rec || (rec.fetched && !forced)) {
         backfillState.skip++;
         paintButton();
         continue;

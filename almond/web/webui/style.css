@@ -201,6 +201,45 @@ main {
 .empty-hint {
   text-align: center; color: var(--faint); font-size: 14px; padding: 80px 0;
 }
+
+/* ---------- 多选操作条（吸在 .board-wrap 底部） ---------- */
+/* sticky 相对 .board-wrap 这个滚动容器：fixed 会跑出滚动区、还要自己避让侧栏；
+   absolute 相对滚动容器会停在内容末尾（等于没动）。bottom 必须让开 fixed 状态栏
+   （9+9 padding + 20 行高 + 1 边框 ≈ 39px），55 = 39 + 16 间隙。 */
+.sel-bar {
+  position: sticky;
+  bottom: 55px;
+  z-index: 5;                 /* 内容 0 / 状态栏 10 / 弹窗 50 */
+  width: max-content;
+  max-width: 100%;            /* overflow-y:auto 会把 overflow-x 也变成 auto，必须限宽 */
+  margin: 16px auto 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(17, 24, 39, .12);
+}
+.sel-count {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.sel-sep { width: 1px; height: 18px; background: var(--border); }
+.sel-bar .btn-ghost { padding: 5px 12px; font-size: 12.5px; }
+.sel-bar .export-select { width: auto; }
+/* 危险动作：配色沿用 .rule-del:hover 的红（--err + #fee2e2） */
+.btn-danger {
+  background: none; border: 1px solid #fecaca; color: var(--err);
+  border-radius: 8px; padding: 6px 16px; font-size: 13px; cursor: pointer;
+  font-family: inherit;
+}
+.btn-danger:hover { background: #fee2e2; border-color: var(--err); }
+.btn-danger:disabled { color: var(--faint); border-color: var(--border); cursor: default; }
 .btn-icon {
   background: none;
   border: none;
@@ -399,6 +438,11 @@ main {
   contain-intrinsic-size: auto 279px auto 241.31px;
 }
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+/* 选中态：**只改颜色**（border-color + 内描边用 box-shadow，都不占布局）。
+   千万别改 border-width / outline-width / padding —— clientHeight 一变就会污染
+   syncCardIntrinsic() 写进 contain-intrinsic-size 的实测值与 reserveHeight() 的占位，
+   一张卡的偏差会逐行累加成上千像素漂移 */
+.card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 
 .thumb {
   position: relative;
@@ -430,6 +474,24 @@ main {
   padding: 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
 }
+
+/* 卡片复选框（多选）：常驻半透明，悬停/选中变亮。
+   a.open 是 inset:0 的定位元素但没有 z-index，这里 z-index:3 就能压住它，
+   点击落在复选框上、不会触发跳转（委托监听在 #board 上） */
+.card-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  z-index: 3;
+  margin: 0;
+  opacity: .45;
+  accent-color: var(--accent);
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.card:hover .card-check, .card.selected .card-check { opacity: 1; }
 
 /* 右上角快捷按钮（详情 / 重新抓取） */
 .thumb-actions {

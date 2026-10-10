@@ -13,9 +13,13 @@ export const state = {
   proxyManual: false,
   proxyDomains: new Set(), // 最终会走代理的域名（侧边栏标记用）
   renameTarget: null,
-  tagTarget: null,         // 标签弹窗的目标记录
+  tagTarget: null,         // 标签弹窗的目标记录（单条）
+  tagTargets: null,        // 标签弹窗的批量目标：url 数组（null = 单条模式）
   domainTarget: null,      // 域名管理弹窗的目标域名
   detailTarget: null,
+  /* 卡片多选：选中的 url（唯一真源，卡片上的复选框只是投影）。
+     按 url 存而不是存记录对象——upsert/render 会换对象，存对象会拿到旧数据 */
+  selectedUrls: new Set(),
 };
 
 /* 单域名少于该条数：侧边栏与看板分组都收进「其他」类别 */

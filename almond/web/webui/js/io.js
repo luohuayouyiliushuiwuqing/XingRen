@@ -46,9 +46,9 @@ function exportHtml(records) {
   downloadFile("bookmarks.html", html, "text/html;charset=utf-8");
 }
 
-export function doExport(format) {
-  const records = getVisibleRecords();
-  if (!records.length) { setStatus("当前没有可导出的记录", "err"); return; }
+/* records 可传入：工具栏导出「当前可见」（默认），多选操作条导出「选中集合」 */
+export function doExport(format, records = getVisibleRecords()) {
+  if (!records.length) { setStatus("没有可导出的记录", "err"); return; }
   if (format === "txt") exportTxt(records);
   else if (format === "html") exportHtml(records);
   setStatus(`已导出 ${records.length} 条为 ${format.toUpperCase()}`);

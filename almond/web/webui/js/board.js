@@ -1,6 +1,7 @@
 /* render() 及其专属机制：分片建卡、懒建观察者、占位高度、滚动保持。 */
 import { createCard } from "./cards.js";
 import { getVisibleRecords } from "./records.js";
+import { syncSelectBar } from "./selectbar.js";
 import { buildSidebar } from "./sidebar.js";
 import { $, MIN_GROUP, hostOf, rootDomain, setStatus, state } from "./state.js";
 
@@ -215,4 +216,8 @@ export function render() {
   /* 回到原滚动位置：此刻所有分组的占位高度都已写好，scrollHeight 是最终值 */
   if (wrap) wrap.scrollTop = sameView ? prevScroll : 0;
   syncCardIntrinsic();   // 平铺分支此刻已有卡片；分组分支由 fillGrid 触发
+  /* 重建后刷新多选：剪掉已删除记录的 url、重算「已选 N 条」。
+     勾选态本身由 createCard 读 state 恢复，这里不用碰卡片；必须放在
+     setStatus 之后（syncSelectBar 不写状态栏，但顺序上放最后最稳） */
+  syncSelectBar();
 }

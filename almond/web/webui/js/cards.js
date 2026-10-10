@@ -89,6 +89,18 @@ export function createCard(record) {
      打开链接用内部 <a>，操作按钮是它的兄弟节点，避免点按钮时触发跳转。
      封面/favicon 与标题、标签一样交给末尾的 fillCard —— 抓取回来才有。 */
   const thumb = el("div", "thumb");
+
+  /* 复选框（多选）：常驻半透明，选中高亮。命中靠 z-index 压过 a.open 的 inset:0。
+     这里只读 state 恢复勾选态（懒建分组后补的卡片也要对）；change 走 #board 上的
+     事件委托（selectbar.js 的 initSelectBar），所以既不加监听、也不 import selectbar。
+     ⚠ el() 不设属性，input 默认是 text，type 必须手动指定 */
+  const cb = el("input", "card-check");
+  cb.type = "checkbox";
+  cb.checked = state.selectedUrls.has(record.url);
+  cb.title = record.url;
+  card.classList.toggle("selected", cb.checked);
+  thumb.appendChild(cb);
+
   const open = el("a", "open");
   open.href = record.url;
   open.target = "_blank";

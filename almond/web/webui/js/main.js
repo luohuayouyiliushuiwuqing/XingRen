@@ -11,6 +11,7 @@ import { doExport, importFromFile } from "./io.js";
 import { addNewTag, submitRename } from "./modals.js";
 import { addRule, detectProxy, openProxyPanel, resetDomain, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
 import { getVisibleRecords, loadProxyDomains, loadRecords } from "./records.js";
+import { initSelectBar } from "./selectbar.js";
 import { buildSidebar } from "./sidebar.js";
 import { $, setStatus, state } from "./state.js";
 import { fsState, loadFs, openDbPanel, saveDbPath } from "./storage.js";
@@ -79,6 +80,9 @@ function init() {
     render();
   });
 
+  /* 多选操作条：按钮接线 + #board 上的复选框 change 委托（render 不会冲掉它） */
+  initSelectBar();
+
   $("modalOk").addEventListener("click", submitRename);
   $("modalCancel").addEventListener("click", () => {
     $("modalMask").hidden = true;
@@ -99,6 +103,7 @@ function init() {
   $("tagClose").addEventListener("click", () => {
     $("tagMask").hidden = true;
     state.tagTarget = null;
+    state.tagTargets = null;   // 批量模式一起清，否则下次单条弹窗会拿到上一批目标
   });
   $("tagMask").addEventListener("click", (e) => {
     if (e.target === $("tagMask")) $("tagClose").click();

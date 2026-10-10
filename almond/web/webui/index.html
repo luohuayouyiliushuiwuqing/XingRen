@@ -31,6 +31,23 @@
     <div class="board-wrap">
       <div id="board" class="board"></div>
       <div id="emptyHint" class="empty-hint" hidden>还没有书签，粘贴一个 URL 开始吧</div>
+      <!-- 多选操作条：吸在 board-wrap 底部（sticky），选中任意卡片才出现 -->
+      <div id="selBar" class="sel-bar" hidden>
+        <span id="selCount" class="sel-count">已选 0 条</span>
+        <button id="selAll" class="btn-ghost">全选</button>
+        <button id="selNone" class="btn-ghost">全不选</button>
+        <button id="selInvert" class="btn-ghost">反选</button>
+        <span class="sel-sep"></span>
+        <button id="selTag" class="btn-ghost">标签</button>
+        <button id="selRefetch" class="btn-ghost">重新抓取</button>
+        <button id="selDelete" class="btn-danger">删除</button>
+        <span class="sel-sep"></span>
+        <select id="selExport" class="input export-select" title="导出选中记录">
+          <option value="">导出</option>
+          <option value="txt">TXT</option>
+          <option value="html">HTML</option>
+        </select>
+      </div>
     </div>
   </main>
 

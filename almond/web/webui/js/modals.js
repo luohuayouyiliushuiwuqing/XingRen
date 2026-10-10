@@ -43,31 +43,49 @@ export async function submitRename() {
 
 export async function openTag(record) {
   state.tagTarget = record;
+  state.tagTargets = null;   // 单条模式
+  await renderTagModal();
+  $("tagMask").hidden = false;
+}
+
+/* 多选操作条的「标签」：同一个弹窗，目标换成一批 url */
+export async function openTagBatch(urls) {
+  if (!urls || !urls.length) return;
+  state.tagTarget = null;
+  state.tagTargets = urls.slice();
   await renderTagModal();
   $("tagMask").hidden = false;
 }
 
 async function renderTagModal() {
-  const record = state.tagTarget;
   const box = $("tagList");
   box.innerHTML = "";
+  /* 单条（tagTarget）与批量（tagTargets）共用一套渲染。
+     active 判据 = 目标里**每一条**都带该标签；部分带 → 显示 +，点一下补齐 */
+  const urls = state.tagTargets || (state.tagTarget ? [state.tagTarget.url] : []);
+  const recs = urls.map((u) => state.records.find((r) => r.url === u)).filter(Boolean);
+  if (!recs.length) { box.textContent = "没有目标记录"; return; }
   try {
     const resp = await fetch("/api/tags");
     const data = await resp.json();
     const tags = data.tags || [];
-    const recordTagIds = new Set((record.tags || []).map(t => t.id));
+    const hasAll = (id) => recs.every((r) => (r.tags || []).some((t) => t.id === id));
     for (const tag of tags) {
-      const item = el("div", "tag-item" + (recordTagIds.has(tag.id) ? " active" : ""));
-      item.innerHTML = `<span>${tag.name}</span><span class="tag-toggle">${recordTagIds.has(tag.id) ? "✓" : "+"}</span>`;
+      const on = hasAll(tag.id);
+      const item = el("div", "tag-item" + (on ? " active" : ""));
+      item.innerHTML = `<span>${tag.name}</span><span class="tag-toggle">${on ? "✓" : "+"}</span>`;
       item.addEventListener("click", async () => {
-        if (recordTagIds.has(tag.id)) {
-          await fetch(`/api/record/tag?url=${encodeURIComponent(record.url)}&tag_id=${tag.id}`, { method: "DELETE" });
-        } else {
-          await fetch("/api/record/tag", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: record.url, tag_id: tag.id }),
-          });
+        /* 对每条目标加/删同一个标签（单条时就是原来的那次请求） */
+        for (const rec of recs) {
+          if (on) {
+            await fetch(`/api/record/tag?url=${encodeURIComponent(rec.url)}&tag_id=${tag.id}`, { method: "DELETE" });
+          } else {
+            await fetch("/api/record/tag", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: rec.url, tag_id: tag.id }),
+            });
+          }
         }
         // 刷新记录数据
         const recResp = await fetch("/api/records");
