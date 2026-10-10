@@ -72,6 +72,11 @@ body {
 .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 /* 自动补抓进行中（与 .sidebar-item.active / .tag-item.active 同一套「开」语义） */
 .btn-ghost.active { border-color: var(--accent); color: var(--accent); }
+/* 补抓无事可做：按钮**常驻**，只用禁用态表达（不隐藏）。
+   声明必须在 :hover 之后——同特异性后者居上，否则禁用后 hover 又亮起来 */
+.btn-ghost:disabled, .btn-ghost:disabled:hover {
+  color: var(--faint); border-color: var(--border); background: none; cursor: default;
+}
 .export-select { width: 74px; padding-right: 6px; font-size: 13px; color: var(--muted); }
 .export-select:hover, .export-select:focus { border-color: var(--accent); color: var(--accent); }
 

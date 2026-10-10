@@ -43,16 +43,48 @@ function savePaused(on) {
    状态栏会被 render() 的「共 N 条…」覆盖，只能当即时提示；
    按钮文案由这里统一刷，入队 / 每条完成 / 暂停与继续都会调。 */
 
+/* 本轮的叫法：人工开的叫强制补抓，自动开的叫自动补抓（状态栏文案共用） */
+function kindText() {
+  return backfillState.forceRun ? "强制补抓" : "自动补抓";
+}
+
 function paintButton() {
   const btn = $("backfillBtn");
   if (!btn) return;
   const left = backfillState.urls.length;
-  if (!left && !backfillState.running) { btn.hidden = true; btn.classList.remove("active"); return; }
-  btn.hidden = false;
-  btn.classList.toggle("active", backfillState.running && !backfillState.paused);
-  if (backfillState.paused) btn.textContent = `继续补抓 ${left}`;
-  else if (backfillState.running) btn.textContent = `补抓 ${backfillState.total - left}/${backfillState.total}`;
-  else btn.textContent = `补抓 ${left}`;
+  const busy = backfillState.running || left > 0;
+  btn.classList.toggle("active", busy && !backfillState.paused);
+
+  /* 运行中/排队中：按钮可点（= 暂停 / 继续），文案报进度 */
+  if (busy) {
+    btn.disabled = false;
+    btn.title = backfillState.paused ? "点击继续补抓" : "点击暂停补抓";
+    if (backfillState.paused) btn.textContent = `继续补抓 ${left}`;
+    else btn.textContent =
+      `${backfillState.forceRun ? "强制" : ""}补抓 ${backfillState.total - left}/${backfillState.total}`;
+    return;
+  }
+
+  /* 空闲：数一数还有没有活——从未抓取的、抓过但失败的。
+     都抓完了才禁用（用户要求：均完成后按钮不再使能），按钮本身不隐藏。 */
+  let pending = 0;
+  let failed = 0;
+  for (const r of state.records) {
+    if (!r.fetched) pending++;
+    else if (!r.success) failed++;
+  }
+  btn.classList.remove("active");
+  if (!pending && !failed) {
+    btn.disabled = true;
+    btn.textContent = "补抓";
+    btn.title = "已全部抓取完成，暂无需要补抓的记录";
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = pending && failed
+    ? `补抓 ${pending} · 重试 ${failed}`
+    : pending ? `补抓 ${pending}` : `重试 ${failed}`;
+  btn.title = "点击强制补抓：从未抓过的和抓取失败的一起重跑（自动补抓只跑从未抓过的）";
 }
 
 /* ---------- 入队 ---------- */
@@ -76,12 +108,12 @@ export function enqueueBackfill(urls, note) {
   backfillState.total += add.length;
 
   if (backfillState.paused) {
-    setStatus(`${note ? note + "；" : ""}自动补抓已暂停（待抓 ${backfillState.urls.length} 条）`);
+    setStatus(`${note ? note + "；" : ""}${kindText()}已暂停（待抓 ${backfillState.urls.length} 条）`);
     paintButton();
     return;
   }
   setStatus(
-    `${note ? note + "；" : ""}自动补抓：待抓 ${backfillState.urls.length} 条（${WORKERS} 并发）`,
+    `${note ? note + "；" : ""}${kindText()}：待抓 ${backfillState.urls.length} 条（${WORKERS} 并发）`,
     "busy"
   );
   paintButton();
@@ -136,11 +168,42 @@ export function startBackfill(note) {
   startPolling();
 }
 
+/* 人工点击 = **强制补抓**：从未抓过的 + 抓过失败的一起重跑。
+   先 loadRecords 再算目标：失败可能来自上一轮或另一个标签页，本地列表未必最新，
+   而且出队复查要在 state.records 里找得到这条才放行。 */
+export function forceBackfill() {
+  setStatus("强制补抓：读取待抓与失败记录…", "busy");
+  loadRecords().then(() => {
+    const failedUrls = state.records.filter((r) => r.fetched && !r.success).map((r) => r.url);
+    const targets = state.records.filter((r) => !r.fetched || !r.success).map((r) => r.url);
+    if (!targets.length) {
+      setStatus("没有需要补抓的记录");
+      paintButton();
+      return;
+    }
+    for (const u of failedUrls) backfillState.forceUrls.add(u);
+    backfillState.forceRun = true;
+    enqueueBackfill(
+      targets,
+      `强制补抓 ${targets.length} 条${failedUrls.length ? `（含失败重试 ${failedUrls.length} 条）` : ""}`
+    );
+  });
+}
+
+/* 按钮唯一点击入口：正在跑 / 已排队 / 已暂停 → 暂停或继续；空闲 → 强制补抓 */
+export function handleBackfillClick() {
+  if (backfillState.running || backfillState.urls.length || backfillState.paused) {
+    toggleBackfill();
+    return;
+  }
+  forceBackfill();
+}
+
 export function toggleBackfill() {
   backfillState.paused = !backfillState.paused;
   savePaused(backfillState.paused);
   if (backfillState.paused) {
-    setStatus(`自动补抓已暂停（剩余 ${backfillState.urls.length} 条）`);
+    setStatus(`${kindText()}已暂停（剩余 ${backfillState.urls.length} 条）`);
     paintButton();
     return;
   }
@@ -158,10 +221,17 @@ function runBackfill() {
   const worker = async () => {
     while (backfillState.urls.length && !backfillState.paused) {
       const url = backfillState.urls.shift();
-      /* 出队复查：这条在排队期间已经被手动「重新抓取」抓过、或已被删除 → 跳过，
-         别再发一次请求（手动抓取与队列并发是常态，不是异常） */
+      /* 出队复查——这里区分自动与强制：
+         · 记录已被删除 → 跳过；
+         · 已尝试过（fetched=1）→ 自动入队的一律跳过，这正是「自动补抓不碰失败记录」；
+           只有人工「强制」入队的失败记录（forceUrls 命中）才放行，抓成功过的仍跳过。 */
       const rec = state.records.find((r) => r.url === url);
-      if (!rec || rec.fetched) { backfillState.skip++; paintButton(); continue; }
+      const forced = backfillState.forceUrls.delete(url);
+      if (!rec || (rec.fetched && (rec.success || !forced))) {
+        backfillState.skip++;
+        paintButton();
+        continue;
+      }
 
       const done = backfillState.total - backfillState.urls.length;
       setStatus(
@@ -204,7 +274,7 @@ function runBackfill() {
     backfillState.running = false;
     if (backfillState.urls.length) {
       if (backfillState.paused) {
-        setStatus(`自动补抓已暂停（剩余 ${backfillState.urls.length} 条）`);
+        setStatus(`${kindText()}已暂停（剩余 ${backfillState.urls.length} 条）`);
         paintButton();
         return;
       }
@@ -217,14 +287,19 @@ function runBackfill() {
       backfillState.paused = false;
       savePaused(false);
     }
+    /* 本轮收口：强制标记只对本轮有效，下一轮回到纯自动语义 */
+    const forcedRun = backfillState.forceRun;
+    backfillState.forceRun = false;
+    backfillState.forceUrls.clear();
+    const kind = forcedRun ? "强制补抓" : "自动补抓";
     const prefix = backfillState.note ? backfillState.note + "；" : "";
     if (!backfillState.ok && !backfillState.fail) {
-      setStatus(`${prefix}自动补抓：${backfillState.total} 条此前都已抓过，无需补抓`);
+      setStatus(`${prefix}${kind}：${backfillState.total} 条此前都已抓过，无需补抓`);
       paintButton();
       return;
     }
     setStatus(
-      `${prefix}自动补抓完成：成功 ${backfillState.ok}，失败 ${backfillState.fail}` +
+      `${prefix}${kind}完成：成功 ${backfillState.ok}，失败 ${backfillState.fail}` +
       `${backfillState.skip ? `，跳过 ${backfillState.skip}` : ""}（共 ${backfillState.total} 条）`,
       backfillState.ok ? "" : "err"
     );

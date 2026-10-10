@@ -3,7 +3,7 @@
 "use strict";
 
 import { recomputePendingGrids, render, syncCardIntrinsic } from "./board.js";
-import { backfillState, startBackfill, toggleBackfill } from "./backfill.js";
+import { backfillState, forceBackfill, handleBackfillClick, startBackfill, toggleBackfill } from "./backfill.js";
 import { updateCard } from "./cards.js";
 import { closeDetail } from "./detail.js";
 import { addUrl, fetchRecord } from "./fetch.js";
@@ -67,7 +67,8 @@ function init() {
     if (file) importFromFile(file);
     e.target.value = "";  // 允许重复选同一文件
   });
-  $("backfillBtn").addEventListener("click", toggleBackfill);
+  /* 一个按钮两种用法：空闲点 = 强制补抓（含失败重试），跑着点 = 暂停/继续 */
+  $("backfillBtn").addEventListener("click", handleBackfillClick);
   $("exportSelect").addEventListener("change", (e) => {
     const format = e.target.value;
     e.target.value = "";  // 复位，允许重复导出同格式
@@ -178,6 +179,9 @@ document.addEventListener("DOMContentLoaded", init);
 
 /* 控制台调试句柄：模块内函数不再挂 window，排查时从这里取 */
 window.XR = {
-  backfill: { start: startBackfill, toggle: toggleBackfill, state: backfillState },
+  backfill: {
+    start: startBackfill, force: forceBackfill, click: handleBackfillClick,
+    toggle: toggleBackfill, state: backfillState,
+  },
   buildSidebar, fetchRecord, getVisibleRecords, loadRecords, render, setStatus, state, updateCard,
 };
