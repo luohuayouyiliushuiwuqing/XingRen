@@ -204,21 +204,6 @@ body {
 .dp-act:hover { border-color: var(--accent); color: var(--accent); }
 .dp-empty { text-align: center; color: var(--faint); font-size: 14px; padding: 48px 0; }
 
-/* 代理面板：全部域名的「详情」入口 + 列表限高（域名可能上百个） */
-.rule-enter {
-  flex: none;
-  margin-left: auto;
-  border: 1px solid var(--border);
-  background: none;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.rule-enter:hover { border-color: var(--accent); color: var(--accent); }
-#domainProxyList { max-height: 240px; overflow-y: auto; }
 .export-select { width: 74px; padding-right: 6px; font-size: 13px; color: var(--muted); }
 .export-select:hover, .export-select:focus { border-color: var(--accent); color: var(--accent); }
 
@@ -724,6 +709,57 @@ main {
 .modal-actions {
   display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;
 }
+
+/* ---------- 代理面板：左小扇区=系统实测，右大扇区=用户配置 ----------
+   放在 .modal 块之后：靠同特异性 + 源顺序覆盖 .modal 的 width:440px。 */
+.proxy-panel {
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+.proxy-body {
+  display: grid;
+  grid-template-columns: 216px 1fr;   /* 左小右大 */
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 700px) {
+  .proxy-body { grid-template-columns: 1fr; }
+}
+.proxy-col-title {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  margin-bottom: 6px;
+}
+.proxy-col-count {
+  font-weight: 400; color: var(--faint);
+  font-family: ui-monospace, Consolas, monospace;
+}
+/* 左扇区：实测列表独立滚动（域名可能上百个） */
+.test-list {
+  max-height: min(460px, 52vh);
+  overflow-y: auto;
+}
+.test-row { cursor: pointer; }
+.test-row:hover { border-color: var(--accent); background: var(--accent-weak); }
+.proxy-side .rule-pattern { min-width: 0; flex: 1; }
+/* 右扇区：域名路由列表限高 */
+.proxy-scroll { max-height: 250px; overflow-y: auto; }
+#domainRuleList .rule-pattern { min-width: 0; flex: 1; }
+/* 域名路由行内的路由下拉：固定宽度（覆盖 .modal .input 的 100%） */
+.proxy-panel .rule-need { flex: 0 0 74px; width: 74px; padding-right: 4px; }
+.proxy-add { margin-top: 2px; }
+.proxy-add .rule-select { flex: 0 0 84px; }
+/* 实测徽标（只读） */
+.test-badge {
+  flex: none;
+  font-size: 11px; font-weight: 700;
+  padding: 1px 7px; border-radius: 5px;
+}
+.test-badge.ok { background: #e8f7ee; color: var(--ok); }
+.test-badge.proxy { background: var(--accent-weak); color: var(--accent); }
+.test-badge.warn { background: #fff5e6; color: #d97706; }
+.test-badge.none { background: var(--bg); color: var(--faint); font-weight: 500; }
 
 /* ---------- 详情弹层 ---------- */
 .detail-modal { width: min(640px, calc(100vw - 48px)); max-height: 82vh; overflow: auto; }

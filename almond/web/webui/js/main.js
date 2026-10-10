@@ -10,7 +10,7 @@ import { applyPrefsTag, leaveDomainPage, syncDomainRoute } from "./domain-page.j
 import { addUrl, fetchRecord } from "./fetch.js";
 import { doExport, importFromFile } from "./io.js";
 import { addNewTag, submitRename } from "./modals.js";
-import { addRule, detectProxy, openProxyPanel, resetDomain, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
+import { addDomainRule, addRule, detectProxy, openProxyPanel, resetDomain, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
 import { getVisibleRecords, loadDomainConfig, loadProxyDomains, loadRecords } from "./records.js";
 import { initSelectBar } from "./selectbar.js";
 import { buildSidebar } from "./sidebar.js";
@@ -132,6 +132,7 @@ function init() {
   $("proxyDetectBtn").addEventListener("click", () => detectProxy({ fill: true }));
   $("ruleAddBtn").addEventListener("click", addRule);
   $("rulePatternInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
+  $("ruleDomainAdd").addEventListener("click", addDomainRule);
 
   $("dbPanelBtn").addEventListener("click", openDbPanel);
   $("dbSave").addEventListener("click", saveDbPath);

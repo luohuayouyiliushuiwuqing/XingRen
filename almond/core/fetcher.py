@@ -3,6 +3,7 @@
 选择抓取器拉取页面后，直接在返回的 Response 对象上用 CSS 选择器提取数据。
 """
 
+import time
 from urllib.parse import urljoin, urlparse
 
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
@@ -45,15 +46,80 @@ def _is_domestic(url: str) -> bool:
     return False
 
 
+# 反爬拦截的常见状态码：常规链拿到它们算「被拦」，才触发扩展策略的定制发现
+_BLOCK_STATUSES = (401, 403, 429, 503)
+
+# 被拦后的扩展候选（在当前可用路由上按序试）：常规链用的是默认参数，这里换打法。
+# 路由切换类策略不在此处——常规链代理/直连互相回退成功时会自动记为策略。
+_DISCOVERY_SPECS: list[tuple[str, dict]] = [
+    ("static", {"impersonate": "firefox147"}),
+    ("static", {"impersonate": "safari184"}),
+    ("static", {"impersonate": "chrome124"}),
+    ("dynamic", {"real_chrome": True}),
+    ("stealth", {"doh": True}),
+]
+
+
+class _StrategyUnavailable(Exception):
+    """策略本身的路由当前不可用（如策略要代理、这轮没有代理）——不算策略失败，不弃用。"""
+
+
+def _sid(route: str, engine: str, params: dict | None = None) -> str:
+    """把「路由|引擎|参数…」编码成策略 id：`proxy|static|impersonate=firefox147`。"""
+    parts = [route, engine]
+    for k, v in (params or {}).items():
+        parts.append(k if v is True else f"{k}={v}")
+    return "|".join(parts)
+
+
+def _exec_strategy(url: str, sid: str, timeout: int, proxy: str | None):
+    """按策略 id 执行一次抓取。路由由策略决定；缺路由条件抛 _StrategyUnavailable。"""
+    parts = sid.split("|")
+    route = parts[0]
+    engine = parts[1] if len(parts) > 1 else "static"
+    params: dict = {}
+    for seg in parts[2:]:
+        k, eq, v = seg.partition("=")
+        params[k] = v if eq else True
+    if route == "proxy":
+        if not proxy:
+            raise _StrategyUnavailable(f"策略需要代理，但本轮没有可用代理")
+        p = proxy
+    else:
+        p = None
+    kw: dict = {}
+    for k, v in params.items():
+        if k == "impersonate":
+            kw["impersonate"] = v
+        elif k == "real_chrome":
+            kw["real_chrome"] = True
+        elif k == "doh":
+            kw["dns_over_https"] = True
+    if engine == "static":
+        return Fetcher.get(url, timeout=timeout, proxy=p, **kw)
+    if engine == "dynamic":
+        return DynamicFetcher.fetch(url, timeout=timeout * 1000, proxy=p, **kw)
+    if engine == "stealth":
+        return StealthyFetcher.fetch(url, timeout=timeout * 1000, proxy=p, **kw)
+    raise ValueError(f"未知策略引擎：{engine}（id={sid}）")   # 旧/坏 id → 当失败弃用
+
+
 def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     """按 Fetcher → DynamicFetcher → StealthyFetcher 降级抓取，成功返回 Response，全部失败返回 None。
 
     国内网站自动跳过代理直连；外国站配置代理时先用代理抓取，代理不可用则回退直连重试整条降级链。
-    经验缓存（fetch_hints）介入三处：
+    经验缓存（fetch_hints）介入：
     - 已知直连不通的域名：没代理 / 代理转发不通 → 直接跳过并打日志，不再烧满三级重试；
     - 代理可用且已知直连不通 → **只跑代理组合**，不再跑直连兜底；
     - 代理端口在但转发不通 → 本轮降级直连（能直连的照跑；不能的上面已拦）。
-    每次结果回写经验：直连网络失败记 direct=False，收到任何响应记对应链路可达。
+    **策略层**（可行配方 = 路由+引擎+参数，任何成功都进成绩册，**最快者当选**）：
+    1. 有策略 → 先用**成绩册里最快**的那套直接拿数据；成功记本次耗时并刷新使用时间
+       （超过 7 天没用会先打「强制复验」日志）；失败/被拦 → 弃用，顺位尝试第二快的
+       （每次抓取最多试 3 套已知策略），全部弃完或路由不可用再走常规链；
+    2. 常规链成功 → 该组合连同耗时记入成绩册（更快才夺位，慢的当备胎——
+       路由切换类的发现也从这里来）；
+    3. 常规链拿到 401/403/429/503（被反爬拦）→ 在当前路由上按 _DISCOVERY_SPECS
+       定制扩展策略（换指纹/真 Chrome/DoH），首个成功者入库并计时。
     """
     if proxy and _is_domestic(url):
         print(f"  国内站点，跳过代理直连：{urlparse(url).hostname}")
@@ -67,21 +133,57 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         print(f"  代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
         proxy = None
 
+    # ── 1) 策略优先：先用成绩册里**最快**的打法；挂了顺位第二快，单轮最多试 3 套 ──
+    tried: set = set()
+    for _ in range(3):
+        strat = fetch_hints.get_strategy(url)
+        if not strat or strat["id"] in tried:
+            break
+        sid = strat["id"]
+        tried.add(sid)
+        if fetch_hints.strategy_stale(url):
+            print(f"  策略 {sid}（历史最快 {strat.get('best_ms')}ms）距上次成功已超过 "
+                  f"{fetch_hints.STRATEGY_STALE_DAYS} 天，强制复验…")
+        t0 = time.time()
+        try:
+            response = _exec_strategy(url, sid, timeout, proxy)
+        except _StrategyUnavailable as exc:
+            print(f"  策略 {sid} 暂不可用（{exc}），走常规链")
+            break                       # 路由缺失是环境问题：不弃用，交给常规链兜路由
+        except Exception as exc:  # noqa: BLE001
+            print(f"  策略 {sid} 执行失败（{type(exc).__name__}: {exc}），弃用并顺位下一套")
+            fetch_hints.drop_strategy(url, sid)
+            continue
+        ms = round((time.time() - t0) * 1000)
+        st = getattr(response, "status", None)
+        if response is not None and (st is None or st < 400):
+            fetch_hints.save_strategy(url, sid, ms)   # 记成绩、刷新时间、最快者当选
+            if sid.startswith("proxy|"):
+                fetch_hints.record_proxy_success(url)
+            else:
+                fetch_hints.record_direct_success(url)
+            return response
+        print(f"  策略 {sid} 返回 HTTP {st}（{ms}ms），弃用并顺位下一套")
+        fetch_hints.drop_strategy(url, sid)
+
+    # ── 2) 常规三级链（代理组合优先，按配置回退直连） ──
     engines = (
-        lambda p: Fetcher.get(url, timeout=timeout, proxy=p),
+        ("static", lambda p: Fetcher.get(url, timeout=timeout, proxy=p)),
         # 浏览器抓取器的 timeout 单位是毫秒，与 Fetcher（秒）不同
-        lambda p: DynamicFetcher.fetch(url, timeout=timeout * 1000, proxy=p),
-        lambda p: StealthyFetcher.fetch(url, timeout=timeout * 1000, proxy=p),
+        ("dynamic", lambda p: DynamicFetcher.fetch(url, timeout=timeout * 1000, proxy=p)),
+        ("stealth", lambda p: StealthyFetcher.fetch(url, timeout=timeout * 1000, proxy=p)),
     )
     proxy_only = bool(proxy) and fetch_hints.proxy_needed(url)
     if proxy_only:
         print(f"  经验缓存：{urlparse(url).hostname} 直连不通，仅走代理抓取")
-    combos: list[tuple] = [(engine, proxy) for engine in engines] if proxy else []
+    combos: list[tuple] = [(n, fn, proxy) for n, fn in engines] if proxy else []
     if not proxy_only:
-        combos += [(engine, None) for engine in engines]
-    for i, (engine, p) in enumerate(combos):
+        combos += [(n, fn, None) for n, fn in engines]
+    blocked_status: int | None = None
+    for i, (ename, engine, p) in enumerate(combos):
         if proxy and not proxy_only and i == len(engines):
             print("  代理抓取失败，回退直连重试…")
+        t0 = time.time()
         try:
             response = engine(p)
         except Exception as exc:  # 网络错误、代理/浏览器不可用、反爬拦截等都走降级
@@ -90,15 +192,45 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
             via = f"（代理 {p}）" if p else ""
             print(f"  抓取失败{via}（{type(exc).__name__}: {exc}），尝试下一抓取器…")
             continue
+        ms = round((time.time() - t0) * 1000)
         status = getattr(response, "status", None)
         # 收到 HTTP 响应（任何状态码）= 这条链路连得上远程，回写经验
         if p is None:
             fetch_hints.record_direct_success(url)
         else:
             fetch_hints.record_proxy_success(url)
+        if status in _BLOCK_STATUSES:
+            blocked_status = status
         if response is not None and (status is None or status < 400):
+            # 成功 → 这套配方连耗时进成绩册（比当前最快才夺位，慢的当备胎）
+            fetch_hints.save_strategy(url, _sid("proxy" if p else "direct", ename), ms)
             return response
         print(f"  抓取返回 HTTP {status}，尝试下一抓取器…")
+
+    # ── 3) 被反爬拦掉（拿到过 401/403/429/503）→ 在当前路由上定制扩展策略 ──
+    if blocked_status is not None:
+        route = "proxy" if proxy else "direct"
+        print(f"  常规链被反爬拦截（HTTP {blocked_status}），定制可用策略（路由 {route}）…")
+        for engine, params in _DISCOVERY_SPECS:
+            sid = _sid(route, engine, params)
+            t0 = time.time()
+            try:
+                response = _exec_strategy(url, sid, timeout, proxy)
+            except Exception as exc:  # noqa: BLE001
+                print(f"    候选 {sid}：{type(exc).__name__}: {exc}")
+                continue
+            ms = round((time.time() - t0) * 1000)
+            st = getattr(response, "status", None)
+            if response is not None and (st is None or st < 400):
+                fetch_hints.save_strategy(url, sid, ms)
+                if route == "proxy":
+                    fetch_hints.record_proxy_success(url)
+                else:
+                    fetch_hints.record_direct_success(url)
+                print(f"  已定制可行策略：{sid}（{ms}ms，下次直接用）")
+                return response
+            print(f"    候选 {sid} → HTTP {st}")
+        print("  扩展候选全部被拦，本轮放弃（下次触发时重新定制）")
     return None
 
 

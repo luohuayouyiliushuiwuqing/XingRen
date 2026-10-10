@@ -131,35 +131,125 @@ async function renderProxyPanel() {
     if (!(data.rules || []).length) ruleBox.appendChild(el("div", "rule-empty", "暂无规则"));
   } catch { ruleBox.textContent = "加载失败"; }
 
-  /* 域名：**全部**列出，不再只显示有域名规则的——
-     侧栏只收条数 ≥10 的域名，零散域名（以及条数少的小站）只能从这里进子页 */
-  const domBox = $("domainProxyList");
-  domBox.innerHTML = "";
+  /* 弹窗两扇区（结构在 index.html 里）：
+     左 .proxy-side = 系统实测（fetch_hints，只读徽标；整行点击进子页——
+       零散域名 <MIN_GROUP 没有侧栏行，这里是它唯一的子页入口，域名设置在子页里）
+     右 .proxy-main = 用户指定的全部关系：全局代理 / URL 模式规则 / 域名路由 */
+  const dRuleBox = $("domainRuleList");
+  const dTestBox = $("domainTestList");
+  const selBox = $("ruleDomainSel");
+  dRuleBox.innerHTML = "";
+  dTestBox.innerHTML = "";
+  selBox.innerHTML = '<option value="">选择域名…</option>';
   try {
     const data = await (await fetch("/api/domains")).json();
     const all = (data.domains || []).slice().sort((a, b) => a.name.localeCompare(b.name));
-    for (const d of all) {
+    const isSpecified = (d) => d.need_proxy !== null && d.need_proxy !== undefined;
+
+    /* ── 右：域名路由（用户指定，可改） ── */
+    const specified = all.filter(isSpecified);
+    for (const d of specified) {
       const row = el("div", "rule-row");
       const nameBtn = el("span", "rule-pattern link", d.name);
-      nameBtn.title = "点域名名：编辑别名 / 代理规则 / 域名重置";
+      nameBtn.title = "点域名名：编辑别名 / 域名重置";
       nameBtn.addEventListener("click", () => { $("proxyMask").hidden = true; openDomain(d.name); });
       row.appendChild(nameBtn);
-      row.appendChild(
-        d.need_proxy === null || d.need_proxy === undefined
-          ? el("span", "rule-note", "跟随全局")
-          : el("span", "rule-proxy" + (d.need_proxy ? "" : " direct"), d.need_proxy ? "用代理" : "直连")
-      );
-      const enter = el("button", "rule-enter", "详情");
-      enter.title = `进入 ${d.name} 的子页面`;
-      enter.addEventListener("click", () => {
+
+      const need = el("select", "input rule-need");
+      need.innerHTML = `<option value="1">用代理</option><option value="0">直连</option>`;
+      need.value = d.need_proxy ? "1" : "0";
+      need.title = "用户指定的路由，可随时改";
+      need.addEventListener("change", () => patchNeedProxy(d.name, need.value === "1"));
+      row.appendChild(need);
+
+      const unset = el("button", "rule-del", "取消");
+      unset.title = "取消指定，回到跟随全局";
+      unset.addEventListener("click", () => patchNeedProxy(d.name, null));
+      row.appendChild(unset);
+      dRuleBox.appendChild(row);
+    }
+    if (!specified.length) {
+      dRuleBox.appendChild(el("div", "rule-empty", "还没有指定任何域名——从下方选择添加"));
+    }
+
+    /* 底部「选择域名」下拉：只列尚未指定的 */
+    for (const d of all.filter((d) => !isSpecified(d))) {
+      const opt = el("option", null, d.name);
+      opt.value = d.name;
+      selBox.appendChild(opt);
+    }
+
+    /* ── 左：系统实测（只读徽标，整行点击进子页） ── */
+    const verdict = (t) => {
+      if (!t) return { text: "未测试", cls: "none", title: "系统还没抓取过这个域名，没有实测结论" };
+      if (t.direct === true) {
+        return { text: "直连", cls: "ok", title: `系统实测：直连可达（${t.updated || "时间未知"}）` };
+      }
+      if (t.direct === false && t.proxy === true) {
+        return { text: "代理", cls: "proxy", title: `系统实测：直连不通、经代理可达（${t.updated || "时间未知"}）` };
+      }
+      if (t.direct === false) {
+        return { text: "须代理", cls: "warn", title: `系统实测：直连不通，代理尚未验证可用（${t.updated || "时间未知"}）` };
+      }
+      if (t.proxy === true) {
+        return { text: "代理", cls: "proxy", title: `系统实测：经代理可达（${t.updated || "时间未知"}）` };
+      }
+      return { text: "未测试", cls: "none", title: "没有直连实测结论" };
+    };
+    const testedCount = all.filter((d) => d.tested).length;
+    $("testColCount").textContent = `${testedCount}/${all.length}`;
+    // 有实测的排前面，其次按名字
+    const rightOrder = all.slice().sort(
+      (a, b) => (b.tested ? 1 : 0) - (a.tested ? 1 : 0) || a.name.localeCompare(b.name)
+    );
+    for (const d of rightOrder) {
+      const row = el("div", "rule-row test-row");
+      const v = verdict(d.tested);
+      const nameBtn = el("span", "rule-pattern link", d.name);
+      nameBtn.title = `${v.title}；点击进入 ${d.name} 子页`;
+      nameBtn.addEventListener("click", () => {
         $("proxyMask").hidden = true;
         goToDomain(d.name);
       });
-      row.appendChild(enter);
-      domBox.appendChild(row);
+      row.appendChild(nameBtn);
+
+      const badge = el("span", `test-badge ${v.cls}`, v.text);
+      badge.title = v.title;
+      row.appendChild(badge);
+      dTestBox.appendChild(row);
     }
-    if (!all.length) domBox.appendChild(el("div", "rule-empty", "还没有任何域名"));
-  } catch { domBox.textContent = "加载失败"; }
+    if (!all.length) dTestBox.appendChild(el("div", "rule-empty", "还没有任何域名"));
+  } catch {
+    dRuleBox.textContent = "加载失败";
+    dTestBox.textContent = "加载失败";
+  }
+}
+
+/* 改一个域名的用户规则（need_proxy：true/false/null=取消指定跟随全局）。
+   只动左栏数据；右栏实测结论来自 fetch_hints，与本接口无关 */
+async function patchNeedProxy(name, need_proxy) {
+  try {
+    const resp = await fetch("/api/domain", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, need_proxy }),
+    });
+    const data = await resp.json();
+    if (!data.ok) { setStatus("更新失败：" + data.error, "err"); return; }
+    const label = need_proxy === null ? "跟随全局（已取消指定）" : (need_proxy ? "用代理" : "直连");
+    setStatus(`已指定 ${name} → ${label}`);
+    loadProxyDomains();   // 生效路由可能变 → 刷新侧栏代理徽标
+    renderProxyPanel();   // 重建两栏（条数、下拉候选）
+  } catch (e) {
+    setStatus("域名更新失败：" + e.message, "err");
+  }
+}
+
+/* 底部「指定」按钮：给尚未指定的域名加一条用户规则 */
+export async function addDomainRule() {
+  const name = $("ruleDomainSel").value;
+  if (!name) { setStatus("请先选择要指定的域名", "err"); return; }
+  await patchNeedProxy(name, $("ruleDomainNeed").value === "1");
 }
 
 export async function saveGlobalProxy() {

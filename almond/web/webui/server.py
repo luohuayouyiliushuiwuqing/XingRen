@@ -11,6 +11,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from almond.core import fetch_hints
 from almond.core.fetcher import get_metadata
 from almond.core.proxy import detect_proxy
 from almond.core.records import (
@@ -102,7 +103,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"urls": list_pending_urls()})
             return
         if path == "/api/domains":
-            self._send_json({"domains": list_domains()})
+            # tested = 抓取经验缓存里的系统实测结论（fetch_hints，只读；域名无数据则为 null）
+            tested = fetch_hints.all_hints()
+            domains = list_domains()
+            for d in domains:
+                d["tested"] = tested.get(d["name"])
+            self._send_json({"domains": domains})
             return
         if path == "/api/tags":
             self._send_json({"tags": list_tags()})
