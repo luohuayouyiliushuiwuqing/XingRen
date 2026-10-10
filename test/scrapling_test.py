@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Scrapling 底层抓取功能实测脚本（纯控制台，不生成任何网页文件）。
 
@@ -17,6 +17,9 @@
   python test/scrapling_test.py --no-browser     # 跳过浏览器引擎（更快）
   python test/scrapling_test.py --full           # 忽略经验/策略，强制跑全部分层
   python test/scrapling_test.py -v               # 输出 DEBUG 级日志（逐级抓取明细）
+  python test/scrapling_test.py https://a.com --cookie "sid=1; token=2"
+                                                 # 为该域名存入 Cookie（浏览器里原样复制），
+                                                 # 之后 fetch_page 每次都 Cookie 优先直取
   python test/scrapling_test.py --timeout 10     # 单次抓取超时秒数
 
 日志：统一走 almond.core.log（loguru），格式「时间 | 级别 | 文件:行号 | 消息」，
@@ -199,14 +202,20 @@ def test_url(url: str, timeout: int, proxy: str | None,
             run_case(name, _make_skip(blocked))
         return
 
-    # 智能模式：已有可行策略 → 分层用例不再重跑，只经 fetch_page 做一次策略直用。
-    # 分层是裸调 scrapling 的（不吃策略/经验短路），全量跑只在 --full 或还没学出策略时做。
+    # 智能模式：已有可行策略 **或 Cookie** → 分层用例不再重跑，只经 fetch_page 做单发直取。
+    # 分层是裸调 scrapling 的（不吃策略/经验短路），全量跑只在 --full 或还没学出东西时做。
     strat = fetch_hints.get_strategy(url) if fetch_hints else None
-    if smart and strat:
-        sid = strat["id"]
-        note = (f"已有策略 {sid}（最快 {strat['best_ms']}ms），智能模式只做策略直用"
-                f"（--full 强制全层）" if strat.get("best_ms") is not None
-                else f"已有策略 {sid}，智能模式只做策略直用（--full 强制全层）")
+    cookie = fetch_hints.get_cookie(url) if fetch_hints else None
+    if smart and (strat or cookie):
+        if strat and cookie:
+            note = (f"已有 Cookie + 策略 {strat['id']}（最快 {strat.get('best_ms')}ms），"
+                    f"智能模式只做单发直取（--full 强制全层）")
+        elif cookie:
+            note = "已有 Cookie，智能模式只做 Cookie 直取（--full 强制全层）"
+        else:
+            note = (f"已有策略 {strat['id']}（最快 {strat['best_ms']}ms），智能模式只做策略直用"
+                    f"（--full 强制全层）" if strat.get("best_ms") is not None
+                    else f"已有策略 {strat['id']}，智能模式只做策略直用（--full 强制全层）")
         logger.info(f"⚡ {note}")
         for name in (f"Fetcher 直连 {url}", f"Fetcher 走代理 {url}",
                      f"DynamicFetcher(JS渲染) {url}", f"StealthyFetcher(反爬) {url}"):
@@ -295,9 +304,12 @@ def _almond_case(url: str, timeout: int, proxy: str | None) -> None:
         strat = fetch_hints.get_strategy(url) if fetch_hints else None
         sid = f"{strat['id']}（最快 {strat['best_ms']}ms）" if strat and strat.get("best_ms") is not None \
             else (strat["id"] if strat else "无")
+        ck = fetch_hints.get_cookie(url) if fetch_hints else None
+        ck_note = (f" · Cookie=有（最快 {ck['best_ms']}ms）" if ck and ck.get("best_ms") is not None
+                   else (" · Cookie=有" if ck else ""))
         return (f"title={meta['title'][:60]} · thumbnail={'有' if meta['thumbnail'] else '无'}"
                 f" · favicon={'有' if meta['favicon'] else '无'} · details={len(meta['details'])} 条"
-                f" · 策略={sid}")
+                f" · 策略={sid}{ck_note}")
 
     run_case(f"almond get_metadata 端到端 {url}", almond_meta)
 
@@ -315,12 +327,25 @@ def main() -> int:
                         help="忽略经验/策略，强制跑全部分层（默认：有策略时只做策略直用）")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="输出 DEBUG 级日志（逐级抓取尝试明细、HTTP 访问日志）")
+    parser.add_argument("--cookie", default=None,
+                        help="为唯一目标 URL 写入 Cookie（浏览器原样复制的 a=1; b=2），本次即 Cookie 优先")
     args = parser.parse_args()
 
     if args.verbose:
         set_level("DEBUG")
 
     targets = [u if "://" in u else "https://" + u for u in (args.urls or DEFAULT_TARGETS)]
+
+    # Cookie 要落到具体域名 → 只允许配单个 URL
+    if args.cookie:
+        if len(targets) != 1:
+            logger.error("--cookie 只能配合恰好 1 个 URL 使用（Cookie 是按域名存的）")
+            return 2
+        if not fetch_hints:
+            logger.error("经验缓存不可用（almond 未导入），无法写入 Cookie")
+            return 2
+        fetch_hints.set_cookie(targets[0], args.cookie)
+        logger.info(f"已写入 Cookie：{targets[0]}（{len(args.cookie)} 字符）→ 本次优先 Cookie 直取")
     logger.info(f"目标: {targets}")
     logger.info(f"超时: {args.timeout}s · 浏览器引擎: {'跳过' if args.no_browser else '启用'}"
                 f" · 模式: {'--full 全层' if args.full else '智能（已有策略只做策略直用）'}")

@@ -134,6 +134,37 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         logger.warning(f"代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
         proxy = None
 
+    # ── 0) Cookie 优先：存过 Cookie 就先带它静态直取一发；
+    #        成功即返回（记耗时、会话轮换一并回写），失效/没存则走下面的策略与常规逻辑 ──
+    ck = fetch_hints.get_cookie(url)
+    if ck:
+        cookies = fetch_hints.parse_cookie_header(ck["value"])
+        if not cookies:
+            logger.warning("已存 Cookie 解析不出键值对，弃用")
+            fetch_hints.drop_cookie(url)
+        else:
+            t0 = time.time()
+            try:
+                # retries=1：Cookie 探测要快失败，重试交给下面的策略/常规链
+                response = Fetcher.get(url, timeout=timeout, proxy=proxy,
+                                       retries=1, cookies=cookies)
+            except Exception as exc:  # noqa: BLE001
+                # 网络类异常不是 Cookie 的错（路由/目标抖动）→ 保留 Cookie，回退
+                logger.debug(f"Cookie 直取失败（{type(exc).__name__}: {exc}），回退策略/常规链")
+            else:
+                ms = round((time.time() - t0) * 1000)
+                st = getattr(response, "status", None)
+                if response is not None and (st is None or st < 400):
+                    fetch_hints.touch_cookie(url, ms, response)   # 刷新时间/记耗时/轮换合并
+                    if proxy:
+                        fetch_hints.record_proxy_success(url)
+                    else:
+                        fetch_hints.record_direct_success(url)
+                    logger.info(f"Cookie 直取成功：{urlparse(url).hostname}（{ms}ms）")
+                    return response
+                fetch_hints.drop_cookie(url)
+                logger.warning(f"Cookie 已失效（HTTP {st}），弃用 → 回退策略/常规链")
+
     # ── 1) 策略优先：先用成绩册里**最快**的打法；挂了顺位第二快，单轮最多试 3 套 ──
     tried: set = set()
     for _ in range(3):
@@ -163,6 +194,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
                 fetch_hints.record_proxy_success(url)
             else:
                 fetch_hints.record_direct_success(url)
+            fetch_hints.store_cookie_from_response(url, response)   # 任意成功都顺手收 Cookie
             return response
         logger.warning(f"策略 {sid} 返回 HTTP {st}（{ms}ms），弃用并顺位下一套")
         fetch_hints.drop_strategy(url, sid)
@@ -205,6 +237,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         if response is not None and (status is None or status < 400):
             # 成功 → 这套配方连耗时进成绩册（比当前最快才夺位，慢的当备胎）
             fetch_hints.save_strategy(url, _sid("proxy" if p else "direct", ename), ms)
+            fetch_hints.store_cookie_from_response(url, response)   # 任意成功都顺手收 Cookie
             return response
         logger.debug(f"抓取返回 HTTP {status}，尝试下一抓取器…")
 
@@ -228,6 +261,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
                     fetch_hints.record_proxy_success(url)
                 else:
                     fetch_hints.record_direct_success(url)
+                fetch_hints.store_cookie_from_response(url, response)
                 logger.info(f"已定制可行策略：{sid}（{ms}ms，下次直接用）")
                 return response
             logger.debug(f"候选 {sid} → HTTP {st}")
