@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from almond.core.fields import extract_fields
 from almond.core.fetcher import fetch_page
+from almond.core.log import logger
 
 ROOT = Path(__file__).parent  # 静态文件与本 server.py 同目录，与是否安装无关
 
@@ -119,13 +120,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(payload)
 
     def log_message(self, fmt: str, *args) -> None:
-        print("[server]", self.address_string(), fmt % args)
+        logger.debug(f"{self.address_string()} {fmt % args}")
 
 
 def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
-    print("演示服务已启动：http://127.0.0.1:8765/")
-    print("接口：GET /api/fetch?url=<网址>&selector=<CSS选择器>&proxy=<代理，可选>")
+    logger.info("演示服务已启动：http://127.0.0.1:8765/")
+    logger.info("接口：GET /api/fetch?url=<网址>&selector=<CSS选择器>&proxy=<代理，可选>")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

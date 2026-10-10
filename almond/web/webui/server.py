@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from almond.core import fetch_hints
 from almond.core.fetcher import get_metadata
+from almond.core.log import logger
 from almond.core.proxy import detect_proxy
 from almond.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
@@ -345,7 +346,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def log_message(self, fmt: str, *args) -> None:
-        print("[webui]", self.address_string(), fmt % args, flush=True)
+        # 访问日志走 DEBUG：补抓轮询每 10s 打一次，默认 INFO 下不刷屏
+        logger.debug(f"{self.address_string()} {fmt % args}")
 
 
 def _opt(name: str, default: str) -> str:
@@ -360,13 +362,13 @@ def main() -> None:
     host = _opt("--host", "0.0.0.0")
     port = int(_opt("--port", "4000"))
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Web 看板已启动：http://{host}:{port}/", flush=True)
+    logger.info(f"Web 看板已启动：http://{host}:{port}/")
     if host == "0.0.0.0":
-        print(f"  本机访问：http://127.0.0.1:{port}/", flush=True)
-        print("  已监听所有网卡且无鉴权；仅本机使用请加 --host 127.0.0.1", flush=True)
+        logger.info(f"本机访问：http://127.0.0.1:{port}/")
+        logger.info("已监听所有网卡且无鉴权；仅本机使用请加 --host 127.0.0.1")
     # 自动探测本地代理端口（7889-7899），只做提示，不改变任何配置
     found = detect_proxy()
-    print(f"  代理探测（7889-7899）：{found or '未发现本地代理'}", flush=True)
+    logger.info(f"代理探测（7889-7899）：{found or '未发现本地代理'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

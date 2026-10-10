@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Scrapling 底层抓取功能实测脚本（纯控制台，不生成任何网页文件）。
 
@@ -10,13 +10,17 @@
   4. almond.core.fetcher.get_metadata  —— Almond 生产链路（三级降级 + 元数据提取）端到端
 
 用法：
-  python scrapling_test.py https://example.com https://your-site.com/page
-  python scrapling_test.py                       # 不带参数用默认示例站
-  python scrapling_test.py --proxy http://127.0.0.1:7897   # 指定代理（默认自动探测端口）
-  python scrapling_test.py --no-proxy            # 强制不探测代理（测纯直连）
-  python scrapling_test.py --no-browser          # 跳过浏览器引擎（更快）
-  python scrapling_test.py --full                # 忽略经验/策略，强制跑全部分层
-  python scrapling_test.py --timeout 10          # 单次抓取超时秒数
+  python test/scrapling_test.py https://example.com https://your-site.com/page
+  python test/scrapling_test.py                  # 不带参数用默认示例站
+  python test/scrapling_test.py --proxy http://127.0.0.1:7897   # 指定代理（默认自动探测端口）
+  python test/scrapling_test.py --no-proxy       # 强制不探测代理（测纯直连）
+  python test/scrapling_test.py --no-browser     # 跳过浏览器引擎（更快）
+  python test/scrapling_test.py --full           # 忽略经验/策略，强制跑全部分层
+  python test/scrapling_test.py -v               # 输出 DEBUG 级日志（逐级抓取明细）
+  python test/scrapling_test.py --timeout 10     # 单次抓取超时秒数
+
+日志：统一走 almond.core.log（loguru），格式「时间 | 级别 | 文件:行号 | 消息」，
+  终端按级别着色；测试报告的 PASS/FAIL/SKIP 也走同一出口（SUCCESS/INFO/ERROR 级）。
 
 经验缓存（cache/fetch_hints.json）：
 - 已知直连不通的域名不跑直连；代理转发不通时快速失败而不是烧满超时。
@@ -34,11 +38,28 @@ import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+# 脚本住在 test/ 下：把仓库根加进 sys.path，保证能 import almond.*
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 try:
     from almond.core import fetch_hints
 except Exception:  # noqa: BLE001 —— 不在仓库里跑时退化为无经验缓存的裸测试
     fetch_hints = None
+
+try:
+    from almond.core.log import logger, set_level
+except Exception:  # noqa: BLE001 —— 没装 loguru 时退回朴素 print，接口对齐 loguru
+
+    class _FallbackLogger:
+        def __getattr__(self, _name):
+            return lambda msg, *args, **kwargs: print(msg)
+
+    logger = _FallbackLogger()
+    set_level = lambda _level: None  # noqa: E731
 
 DEFAULT_TARGETS = ["https://example.com", "https://www.baidu.com"]
 PROXY_PORTS = range(7889, 7900)
@@ -71,7 +92,13 @@ def run_case(name: str, fn) -> None:
         line += f"  · {detail}"
     if error:
         line += f"\n         ↳ {error}"
-    print(line, flush=True)
+    # 报告也走统一日志出口：PASS→SUCCESS(绿) / FAIL→ERROR(红) / SKIP→INFO
+    if status == PASS:
+        logger.success(line)
+    elif status == FAIL:
+        logger.error(line)
+    else:
+        logger.info(line)
 
 
 def assert_true(cond: bool, msg: str) -> None:
@@ -102,9 +129,8 @@ def _chromium_path() -> str | None:
 
 
 def _has_almond() -> bool:
-    from pathlib import Path
-
-    return (Path(__file__).resolve().parent / "almond").exists()
+    # 脚本在 test/ 下，仓库根是上一级
+    return (Path(__file__).resolve().parent.parent / "almond").exists()
 
 
 def check_env() -> str | None:
@@ -112,11 +138,11 @@ def check_env() -> str | None:
     import scrapling
 
     chromium = _chromium_path()
-    print(f"环境: Python {platform.python_version()} · scrapling "
-          f"{getattr(scrapling, '__version__', '?')} · "
-          f"chromium {'就位' if chromium else '缺失（浏览器引擎将跳过）'}")
+    logger.info(f"环境: Python {platform.python_version()} · scrapling "
+                f"{getattr(scrapling, '__version__', '?')} · "
+                f"chromium {'就位' if chromium else '缺失（浏览器引擎将跳过）'}")
     if chromium:
-        print(f"      {chromium}")
+        logger.info(f"chromium: {chromium}")
     return chromium
 
 
@@ -159,14 +185,14 @@ def _resp_detail(resp) -> str:
 
 def test_url(url: str, timeout: int, proxy: str | None,
              chromium: str | None, with_browser: bool, smart: bool = True) -> None:
-    print(f"\n=== {url} ===")
+    logger.info(f"=== {url} ===")
 
     from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
     # 经验缓存整 URL 拦截：已知直连不通且（没代理 / 代理不通）→ 全部用例秒跳过
     blocked = fetch_hints.skip_reason(url, proxy) if fetch_hints else None
     if blocked:
-        print(f"  ⚠ {blocked}")
+        logger.warning(f"⚠ {blocked}")
         for name in (f"Fetcher 直连 {url}", f"Fetcher 走代理 {url}",
                      f"DynamicFetcher(JS渲染) {url}", f"StealthyFetcher(反爬) {url}",
                      f"almond get_metadata 端到端 {url}"):
@@ -181,7 +207,7 @@ def test_url(url: str, timeout: int, proxy: str | None,
         note = (f"已有策略 {sid}（最快 {strat['best_ms']}ms），智能模式只做策略直用"
                 f"（--full 强制全层）" if strat.get("best_ms") is not None
                 else f"已有策略 {sid}，智能模式只做策略直用（--full 强制全层）")
-        print(f"  ⚡ {note}")
+        logger.info(f"⚡ {note}")
         for name in (f"Fetcher 直连 {url}", f"Fetcher 走代理 {url}",
                      f"DynamicFetcher(JS渲染) {url}", f"StealthyFetcher(反爬) {url}"):
             run_case(name, _make_skip(note))
@@ -192,7 +218,7 @@ def test_url(url: str, timeout: int, proxy: str | None,
     usable = proxy
     if proxy and fetch_hints and not fetch_hints.proxy_reachable(proxy):
         usable = None
-        print(f"  ⚠ 代理 {proxy} 转发不通（健康检查失败）：走代理用例快速失败，其余降级直连")
+        logger.warning(f"⚠ 代理 {proxy} 转发不通（健康检查失败）：走代理用例快速失败，其余降级直连")
 
     # 1) 静态 Fetcher：直连（已知直连不通就不跑）
     def direct():
@@ -287,31 +313,36 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true", help="跳过浏览器引擎（更快）")
     parser.add_argument("--full", action="store_true",
                         help="忽略经验/策略，强制跑全部分层（默认：有策略时只做策略直用）")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="输出 DEBUG 级日志（逐级抓取尝试明细、HTTP 访问日志）")
     args = parser.parse_args()
 
+    if args.verbose:
+        set_level("DEBUG")
+
     targets = [u if "://" in u else "https://" + u for u in (args.urls or DEFAULT_TARGETS)]
-    print(f"目标: {targets}")
-    print(f"超时: {args.timeout}s · 浏览器引擎: {'跳过' if args.no_browser else '启用'}"
-          f" · 模式: {'--full 全层' if args.full else '智能（已有策略只做策略直用）'}")
+    logger.info(f"目标: {targets}")
+    logger.info(f"超时: {args.timeout}s · 浏览器引擎: {'跳过' if args.no_browser else '启用'}"
+                f" · 模式: {'--full 全层' if args.full else '智能（已有策略只做策略直用）'}")
     if fetch_hints:
-        print(f"经验缓存: {fetch_hints.path()}")
+        logger.info(f"经验缓存: {fetch_hints.path()}")
 
     chromium = check_env()
 
     if args.no_proxy:
         proxy = None
-        print("代理: --no-proxy 已指定，不做探测")
+        logger.info("代理: --no-proxy 已指定，不做探测")
     else:
         proxy = args.proxy or probe_proxy_ports()
-        print(f"代理: {proxy or '未检测到（7889-7899 无监听，且未指定 --proxy）'}")
-    print("-" * 72)
+        logger.info(f"代理: {proxy or '未检测到（7889-7899 无监听，且未指定 --proxy）'}")
+    logger.info("-" * 72)
 
     for url in targets:
         test_url(url, args.timeout, proxy, chromium,
                  with_browser=not args.no_browser, smart=not args.full)
 
-    print("-" * 72)
-    print(f"合计 通过 {_counts[PASS]} · 失败 {_counts[FAIL]} · 跳过 {_counts[SKIP]}")
+    logger.info("-" * 72)
+    logger.info(f"合计 通过 {_counts[PASS]} · 失败 {_counts[FAIL]} · 跳过 {_counts[SKIP]}")
     return 1 if _counts[FAIL] else 0
 
 

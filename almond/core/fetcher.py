@@ -10,6 +10,7 @@ from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
 from almond.core import fetch_hints
 from almond.core.fields import extract_fields
+from almond.core.log import logger
 
 # 详情区块选择器：抓取成功后顺带解析「标签: 值」字段，无匹配时 details 为空列表
 DETAIL_SELECTOR = ".space-y-2 > *"
@@ -122,15 +123,15 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
        定制扩展策略（换指纹/真 Chrome/DoH），首个成功者入库并计时。
     """
     if proxy and _is_domestic(url):
-        print(f"  国内站点，跳过代理直连：{urlparse(url).hostname}")
+        logger.info(f"国内站点，跳过代理直连：{urlparse(url).hostname}")
         proxy = None
 
     reason = fetch_hints.skip_reason(url, proxy)
     if reason:
-        print(f"  跳过抓取：{reason}")
+        logger.info(f"跳过抓取：{reason}")
         return None
     if proxy and not fetch_hints.proxy_reachable(proxy):
-        print(f"  代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
+        logger.warning(f"代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
         proxy = None
 
     # ── 1) 策略优先：先用成绩册里**最快**的打法；挂了顺位第二快，单轮最多试 3 套 ──
@@ -142,16 +143,16 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         sid = strat["id"]
         tried.add(sid)
         if fetch_hints.strategy_stale(url):
-            print(f"  策略 {sid}（历史最快 {strat.get('best_ms')}ms）距上次成功已超过 "
-                  f"{fetch_hints.STRATEGY_STALE_DAYS} 天，强制复验…")
+            logger.info(f"策略 {sid}（历史最快 {strat.get('best_ms')}ms）距上次成功已超过 "
+                        f"{fetch_hints.STRATEGY_STALE_DAYS} 天，强制复验…")
         t0 = time.time()
         try:
             response = _exec_strategy(url, sid, timeout, proxy)
         except _StrategyUnavailable as exc:
-            print(f"  策略 {sid} 暂不可用（{exc}），走常规链")
+            logger.info(f"策略 {sid} 暂不可用（{exc}），走常规链")
             break                       # 路由缺失是环境问题：不弃用，交给常规链兜路由
         except Exception as exc:  # noqa: BLE001
-            print(f"  策略 {sid} 执行失败（{type(exc).__name__}: {exc}），弃用并顺位下一套")
+            logger.warning(f"策略 {sid} 执行失败（{type(exc).__name__}: {exc}），弃用并顺位下一套")
             fetch_hints.drop_strategy(url, sid)
             continue
         ms = round((time.time() - t0) * 1000)
@@ -163,7 +164,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
             else:
                 fetch_hints.record_direct_success(url)
             return response
-        print(f"  策略 {sid} 返回 HTTP {st}（{ms}ms），弃用并顺位下一套")
+        logger.warning(f"策略 {sid} 返回 HTTP {st}（{ms}ms），弃用并顺位下一套")
         fetch_hints.drop_strategy(url, sid)
 
     # ── 2) 常规三级链（代理组合优先，按配置回退直连） ──
@@ -175,14 +176,14 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     )
     proxy_only = bool(proxy) and fetch_hints.proxy_needed(url)
     if proxy_only:
-        print(f"  经验缓存：{urlparse(url).hostname} 直连不通，仅走代理抓取")
+        logger.info(f"经验缓存：{urlparse(url).hostname} 直连不通，仅走代理抓取")
     combos: list[tuple] = [(n, fn, proxy) for n, fn in engines] if proxy else []
     if not proxy_only:
         combos += [(n, fn, None) for n, fn in engines]
     blocked_status: int | None = None
     for i, (ename, engine, p) in enumerate(combos):
         if proxy and not proxy_only and i == len(engines):
-            print("  代理抓取失败，回退直连重试…")
+            logger.info("代理抓取失败，回退直连重试…")
         t0 = time.time()
         try:
             response = engine(p)
@@ -190,7 +191,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
             if p is None and fetch_hints.is_network_error(str(exc)):
                 fetch_hints.record_direct_failure(url)   # 直连网络不可达 → 记入经验
             via = f"（代理 {p}）" if p else ""
-            print(f"  抓取失败{via}（{type(exc).__name__}: {exc}），尝试下一抓取器…")
+            logger.debug(f"抓取失败{via}（{type(exc).__name__}: {exc}），尝试下一抓取器…")
             continue
         ms = round((time.time() - t0) * 1000)
         status = getattr(response, "status", None)
@@ -205,19 +206,19 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
             # 成功 → 这套配方连耗时进成绩册（比当前最快才夺位，慢的当备胎）
             fetch_hints.save_strategy(url, _sid("proxy" if p else "direct", ename), ms)
             return response
-        print(f"  抓取返回 HTTP {status}，尝试下一抓取器…")
+        logger.debug(f"抓取返回 HTTP {status}，尝试下一抓取器…")
 
     # ── 3) 被反爬拦掉（拿到过 401/403/429/503）→ 在当前路由上定制扩展策略 ──
     if blocked_status is not None:
         route = "proxy" if proxy else "direct"
-        print(f"  常规链被反爬拦截（HTTP {blocked_status}），定制可用策略（路由 {route}）…")
+        logger.warning(f"常规链被反爬拦截（HTTP {blocked_status}），定制可用策略（路由 {route}）…")
         for engine, params in _DISCOVERY_SPECS:
             sid = _sid(route, engine, params)
             t0 = time.time()
             try:
                 response = _exec_strategy(url, sid, timeout, proxy)
             except Exception as exc:  # noqa: BLE001
-                print(f"    候选 {sid}：{type(exc).__name__}: {exc}")
+                logger.debug(f"候选 {sid}：{type(exc).__name__}: {exc}")
                 continue
             ms = round((time.time() - t0) * 1000)
             st = getattr(response, "status", None)
@@ -227,10 +228,10 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
                     fetch_hints.record_proxy_success(url)
                 else:
                     fetch_hints.record_direct_success(url)
-                print(f"  已定制可行策略：{sid}（{ms}ms，下次直接用）")
+                logger.info(f"已定制可行策略：{sid}（{ms}ms，下次直接用）")
                 return response
-            print(f"    候选 {sid} → HTTP {st}")
-        print("  扩展候选全部被拦，本轮放弃（下次触发时重新定制）")
+            logger.debug(f"候选 {sid} → HTTP {st}")
+        logger.warning("扩展候选全部被拦，本轮放弃（下次触发时重新定制）")
     return None
 
 
