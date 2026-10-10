@@ -1,7 +1,6 @@
 /* 左侧栏构建与「更多」溢出测量/展开。 */
 import { render } from "./board.js";
 import { goToDomain, leaveDomainPage } from "./domain-page.js";
-import { openDomain } from "./proxy-panel.js";
 import { $, MIN_GROUP, el, hostOf, rootDomain, state } from "./state.js";
 
 /* 所有筛选动作共用：正在域名子页里点筛选 = 先退回看板再套筛选。
@@ -20,7 +19,7 @@ export function buildSidebar() {
   sb.innerHTML = "";
   sb.classList.remove("expanded");   // 先按未展开测量，避免滚动条宽度干扰
 
-  const allActive = state.selectedDomain === null && state.selectedTag === null;
+  const allActive = !state.domainPage && state.selectedDomain === null && state.selectedTag === null;
   const all = el("div", "sidebar-item" + (allActive ? " active" : ""));
   all.innerHTML = `<span class="sidebar-name">全部</span><span class="sidebar-count">${state.records.length}</span>`;
   all.addEventListener("click", () => filterTo(() => {
@@ -38,29 +37,25 @@ export function buildSidebar() {
   }
   const sortedDomains = [...domainCounts.entries()].sort((a, b) => b[1] - a[1]);
 
-  /* 域名行三段式：[编辑]  名称·徽标·计数  [详情]
-     行本体点击 = 筛选（现状不变）；左「编辑」开域名管理弹窗，右「详情」进域名子页。
-     两个入口都 stopPropagation：点击后 render() 会重建侧栏，
-     事件若冒泡到行上会把筛选一起改掉（这也是不能用双击的原因） */
-  const proxyItem = (label, count, active, onClick, badgeTitle) => {
+  /* 域名行整行点击 = 直接进入该域名的子页（再点一次退回看板）。
+     高亮跟着 state.domainPage 走（进入子页才亮），不再有 [编辑]/[详情] 两个入口——
+     编辑进子页的「域名设置」，别名/代理/域名重置也都在那里；代理面板的域名列表仍是备用入口 */
+  const domainItem = (label, count) => {
+    const active = state.domainPage === label;
     const proxied = state.proxyDomains.has(label);
     const item = el("div", "sidebar-item" + (active ? " active" : "") + (proxied ? " proxy" : ""));
-    let main = `<span class="sidebar-name">${label}</span>`;
-    if (proxied) main += `<span class="proxy-badge" title="${badgeTitle || "匹配代理规则：走代理"}">代理</span>`;
-    main += `<span class="sidebar-count">${count}</span>`;
-
-    const edit = el("span", "sidebar-act sidebar-edit", "编辑");
-    edit.title = "域名管理（别名 / 代理 / 域名重置）";
-    edit.addEventListener("click", (e) => { e.stopPropagation(); openDomain(label); });
-
-    const detail = el("span", "sidebar-act sidebar-detail", "详情");
-    detail.title = `进入 ${label} 的子页面`;
-    detail.addEventListener("click", (e) => { e.stopPropagation(); goToDomain(label); });
-
-    const mid = el("span", "sidebar-main");
-    mid.innerHTML = main;
-    item.append(edit, mid, detail);
-    item.addEventListener("click", onClick);
+    let inner = `<span class="sidebar-name">${label}</span>`;
+    if (proxied) inner += `<span class="proxy-badge" title="匹配代理规则：走代理">代理</span>`;
+    inner += `<span class="sidebar-count">${count}</span>`;
+    item.innerHTML = inner;
+    item.title = active ? `再点一次返回看板` : `进入 ${label} 的子页面`;
+    item.addEventListener("click", () => {
+      if (state.domainPage === label) {
+        leaveDomainPage();   // 内部自己 render（清状态 + 清 hash + 重绘看板）
+      } else {
+        goToDomain(label);   // hashchange → syncDomainRoute() → render()
+      }
+    });
     sb.appendChild(item);
     return item;
   };
@@ -75,10 +70,7 @@ export function buildSidebar() {
       if (state.proxyDomains.has(domain)) minorProxied++;
       continue;
     }
-    const active = state.selectedDomain === domain;
-    proxyItem(domain, count, active, () => filterTo(() => {
-      state.selectedDomain = active ? null : domain;
-    }));
+    domainItem(domain, count);
   }
   if (minorNames.length) {
     const active = state.selectedDomain === "__other__";

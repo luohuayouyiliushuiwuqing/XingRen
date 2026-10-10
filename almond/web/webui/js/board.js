@@ -10,8 +10,9 @@ import { $, MIN_GROUP, el, hostOf, rootDomain, setStatus, state } from "./state.
 
 /* 分组分片建卡片：每帧 100 张，既不卡顿也不会一次建出全部节点。
    onDone 在**全部建完**时调用——补建期间占位高度一直留着，
-   高度不随分片增长而变，滚动位置才不会被顶走 */
-function appendCardsChunked(grid, recs, start = 0, onDone) {
+   高度不随分片增长而变，滚动位置才不会被顶走。
+   导出给 domain-page 的卡片视图复用（域名子页不分组、不占位，onDone 不传） */
+export function appendCardsChunked(grid, recs, start = 0, onDone) {
   const CHUNK = 100;
   const end = Math.min(start + CHUNK, recs.length);
   for (let i = start; i < end; i++) grid.appendChild(createCard(recs[i]));

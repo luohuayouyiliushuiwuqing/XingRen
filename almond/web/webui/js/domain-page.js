@@ -1,11 +1,14 @@
-/* 域名子页：#/domain/<rootDomain> 路由 + 域头设置 + 记录列表行。
+/* 域名子页：#/domain/<rootDomain> 路由 + 域头设置 + 卡片/列表双视图。
    - 进子页**不改** state.selectedDomain（看板筛选态与侧栏高亮原样保留）；
      getVisibleRecords() 里加了 domainPage 分支，所以「全选/导出」的口径自动正确。
    - 域头（含设置表单）放在**静态容器 #domainHeader**里，不在 #board 内——
      render() 会 board.innerHTML=""，表单在 #board 里的话，任何一次后台 render
      （标签弹窗关闭、删除、搜索…）都会把用户正打的字冲掉。与 #selBar 同一套路。
-   - 列表行进 #board，复用多选（data-url + .card-check）与 7 个批量动作。 */
-import { render } from "./board.js";
+   - 视图两态（prefs.view：卡片/列表）：卡片 = 复用 cards.createCard 的网格
+     （与看板同款，分片建卡），列表 = .dp-row 行（路径/详情摘要等字段展示）。
+     行与卡都带 data-url + .card-check，多选与 7 个批量动作在两种视图下原样可用。 */
+import { appendCardsChunked, render, syncCardIntrinsic } from "./board.js";
+import { createCard } from "./cards.js";
 import { openDetail } from "./detail.js";
 import { fetchRecord } from "./fetch.js";
 import { openRename, openTag } from "./modals.js";
@@ -28,10 +31,15 @@ export function goToDomain(domain) {
   location.hash = next;       // hashchange → syncDomainRoute() → render()
 }
 
+/* 退回看板：置空状态 + 清 hash，并**自己 render 一次**。
+   必须显式 render——置空发生在 hashchange 之前，回声到 syncDomainRoute() 时
+   「hash 与 state 一致（都是空）」被判为无变化不渲染，画面会留在子页上（曾经的坑）。
+   filterTo 等随后还要再 render 的调用方多渲染一次无妨（同一任务内，只画最后一帧） */
 export function leaveDomainPage() {
   if (!state.domainPage) return;
   state.domainPage = null;
   if (location.hash) location.hash = "";
+  render();
 }
 
 /* 地址栏 → state。返回「是否变化」，调用方据此决定要不要 render；
@@ -63,6 +71,7 @@ function readPrefs(cfg) {
     sort: p.sort || "default",
     fields: Array.isArray(p.fields) && p.fields.length ? p.fields : DEFAULT_FIELDS,
     tag: p.tag || "",
+    view: p.view === "list" ? "list" : "card",   // 默认卡片（与看板同款）；存过 list 才用列表
   };
 }
 
@@ -103,8 +112,23 @@ export function renderDomainPage(board, visible) {
   const recs = cmp ? visible.slice().sort(cmp) : visible;
 
   board.appendChild(buildToolbar(domain, prefs));
+
+  if (!recs.length) {
+    board.appendChild(el("div", "dp-empty", "该域名下没有符合当前条件的记录"));
+    return 0;
+  }
+
+  /* 卡片视图：复用 createCard 与看板的分片建卡（每帧 100 张）。
+     不需要看板那套占位高度/懒建观察者——子页没有分组，content-visibility 自己会跳帧 */
+  if (prefs.view === "card") {
+    const grid = el("div", "domain-grid");
+    board.appendChild(grid);
+    appendCardsChunked(grid, recs);
+    syncCardIntrinsic();   // 首片已同步建出，量真实尺寸覆盖 contain-intrinsic-size
+    return recs.length;
+  }
+
   const list = el("div", "dp-list");
-  if (!recs.length) list.appendChild(el("div", "dp-empty", "该域名下没有符合当前条件的记录"));
   for (const r of recs) list.appendChild(buildRow(r, prefs));
   board.appendChild(list);
   return recs.length;
@@ -278,6 +302,21 @@ function buildSettings(domain, cfg) {
 function buildToolbar(domain, prefs) {
   const bar = el("div", "dp-toolbar");
 
+  /* 视图：卡片 / 列表（默认卡片）。切换即入库，且滚回顶部——
+     列表滚到深处再切卡片，停在半空中会像没切换成功 */
+  const view = el("select", "input dp-sort");
+  view.innerHTML = `<option value="card">视图：卡片</option>
+    <option value="list">视图：列表</option>`;
+  view.value = prefs.view;
+  view.addEventListener("change", () => {
+    prefs.view = view.value;
+    savePrefs(domain, prefs);
+    render();
+    const wrap = document.querySelector(".board-wrap");
+    if (wrap) wrap.scrollTop = 0;
+  });
+  bar.appendChild(view);
+
   const sort = el("select", "input dp-sort");
   sort.innerHTML = `<option value="default">排序：默认（入库顺序）</option>
     <option value="title">排序：标题</option>
@@ -291,21 +330,24 @@ function buildToolbar(domain, prefs) {
   });
   bar.appendChild(sort);
 
-  /* 展示字段：标题恒显，其余三段可关（改动即入库，下次进这个域名还是这套） */
-  for (const [key, labelText] of [["url", "路径"], ["tags", "标签"], ["details", "详情摘要"]]) {
-    const label = el("label", "dp-field-toggle");
-    const cb = el("input");
-    cb.type = "checkbox";
-    cb.checked = prefs.fields.includes(key);
-    cb.addEventListener("change", () => {
-      prefs.fields = cb.checked
-        ? [...new Set([...prefs.fields, key])]
-        : prefs.fields.filter((f) => f !== key);
-      savePrefs(domain, prefs);
-      render();
-    });
-    label.append(cb, document.createTextNode(labelText));
-    bar.appendChild(label);
+  /* 展示字段：只在列表视图有意义（卡片不显示路径/详情摘要）。
+     标题恒显，其余三段可关（改动即入库，下次进这个域名还是这套） */
+  if (prefs.view === "list") {
+    for (const [key, labelText] of [["url", "路径"], ["tags", "标签"], ["details", "详情摘要"]]) {
+      const label = el("label", "dp-field-toggle");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = prefs.fields.includes(key);
+      cb.addEventListener("change", () => {
+        prefs.fields = cb.checked
+          ? [...new Set([...prefs.fields, key])]
+          : prefs.fields.filter((f) => f !== key);
+        savePrefs(domain, prefs);
+        render();
+      });
+      label.append(cb, document.createTextNode(labelText));
+      bar.appendChild(label);
+    }
   }
 
   /* 标签筛选：子页内改（侧栏点标签会退回看板，两套入口语义不同） */
