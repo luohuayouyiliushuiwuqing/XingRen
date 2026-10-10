@@ -6,11 +6,12 @@ import { recomputePendingGrids, render, syncCardIntrinsic } from "./board.js";
 import { backfillState, forceBackfill, handleBackfillClick, startBackfill, toggleBackfill } from "./backfill.js";
 import { updateCard } from "./cards.js";
 import { closeDetail } from "./detail.js";
+import { applyPrefsTag, leaveDomainPage, syncDomainRoute } from "./domain-page.js";
 import { addUrl, fetchRecord } from "./fetch.js";
 import { doExport, importFromFile } from "./io.js";
 import { addNewTag, submitRename } from "./modals.js";
 import { addRule, detectProxy, openProxyPanel, resetDomain, saveDomain, saveGlobalProxy } from "./proxy-panel.js";
-import { getVisibleRecords, loadProxyDomains, loadRecords } from "./records.js";
+import { getVisibleRecords, loadDomainConfig, loadProxyDomains, loadRecords } from "./records.js";
 import { initSelectBar } from "./selectbar.js";
 import { buildSidebar } from "./sidebar.js";
 import { $, setStatus, state } from "./state.js";
@@ -167,17 +168,41 @@ function init() {
     if (e.target === $("detailMask")) closeDetail();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("detailMask").hidden) closeDetail();
+    if (e.key !== "Escape") return;
+    if (!$("detailMask").hidden) { closeDetail(); return; }
+    /* 子页里 Esc = 返回看板；有其它弹窗开着时优先关弹窗，不退页 */
+    if (state.domainPage && !anyModalOpen()) leaveDomainPage();
   });
 
   loadProxyDomains(); // 先拿到走代理域名集合，回来后自动 render 打标
-  /* 自动补抓排在「记录已载入」与「代理已探测」之后：
+  /* 路由先定视图：放在加载链之前，带 #/domain/xxx 打开时首屏直接是子页，不闪看板 */
+  window.addEventListener("hashchange", () => { if (syncDomainRoute()) render(); });
+  syncDomainRoute();
+  /* 自动补抓排在「记录、代理、域名配置」都就位之后：
      不等 loadRecords 则 state.records 还是空的，一条都挑不出来；
-     不等 detectProxy 则前几条会拿默认代理地址去抓外网。
+     不等 detectProxy 则前几条会拿默认代理地址去抓外网；
+     不等 loadDomainConfig 则 auto_fetch=0 的域名过滤不到（轮询还会每 10 秒空转一次）。
      链式不阻塞界面，init 仍保持同步函数（顶层 async function 会撞循环规则检查）。 */
   loadRecords()
     .then(() => detectProxy({ fill: true, announce: false }))
-    .then(() => startBackfill());
+    .then(() => loadDomainConfig())
+    .then(() => {
+      const before = state.selectedTag;
+      applyPrefsTag();                  // 子页：套用该域名存的标签偏好
+      /* 配置到位后子页必须重绘一次：第一帧渲染时 domainConfig 还是空的，
+         排序/展示字段/别名/抓取规则全是默认值，不重绘就一直停在默认上 */
+      if (state.domainPage || state.selectedTag !== before) render();
+      startBackfill();
+    });
+}
+
+/* 有没有弹窗开着（detailMask 单独处理，Esc 的第一优先级） */
+function anyModalOpen() {
+  for (const id of ["modalMask", "tagMask", "domainMask", "proxyMask", "dbMask"]) {
+    const m = $(id);
+    if (m && !m.hidden) return true;
+  }
+  return false;
 }
 
 document.addEventListener("DOMContentLoaded", init);
@@ -188,5 +213,6 @@ window.XR = {
     start: startBackfill, force: forceBackfill, click: handleBackfillClick,
     toggle: toggleBackfill, state: backfillState,
   },
+  domain: { leave: leaveDomainPage, sync: syncDomainRoute },
   buildSidebar, fetchRecord, getVisibleRecords, loadRecords, render, setStatus, state, updateCard,
 };

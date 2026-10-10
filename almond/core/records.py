@@ -203,6 +203,19 @@ def _ensure(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # group_name 列已不存在
 
+    # 迁移：域名级配置（每域名的显示偏好 + 抓取规则），都挂在 domains 表上。
+    # auto_fetch / cover 用**可空**整型——NULL 就是「跟随全局 / 默认」，
+    # 与 need_proxy 的三态口径一致（NOT NULL 会存不进 NULL）。
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(domains)")]
+    for col, ddl in (
+        ("prefs", "TEXT NOT NULL DEFAULT '{}'"),          # JSON：{sort, fields[], tag}
+        ("auto_fetch", "INTEGER"),                        # NULL=跟随全局, 1=开, 0=关（补抓不碰）
+        ("detail_selector", "TEXT NOT NULL DEFAULT ''"),  # '' = 用默认 .space-y-2 > *
+        ("cover", "INTEGER"),                             # NULL=默认(og), 0=不要封面, 1=只要图标
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE domains ADD COLUMN {col} {ddl}")
+
     # 自动填充 domains 表（老库升级用，**按库跑一次**）
     # 这段必须门控：_ensure 每开一条连接都会走一遍，全表扫 + 逐行 urlparse +
     # 写语句就是 O(N)×每条连接——一次 5000 条的自动补抓会放大成 O(N²)，
@@ -499,10 +512,22 @@ _UNSET = object()  # 与「值为 None」区分开：None = 设为无规则，_U
 
 
 def _domain_row(row: sqlite3.Row) -> dict:
+    # prefs 落库是 JSON 字符串，出库还原成对象（坏数据一律当没有偏好）
+    try:
+        prefs = json.loads(row["prefs"] or "{}")
+    except (json.JSONDecodeError, KeyError, IndexError):
+        prefs = {}
+    if not isinstance(prefs, dict):
+        prefs = {}
     return {"id": row["id"], "name": row["name"],
             "display_name": row["display_name"],
             # None = 无规则（跟随全局），True = 用代理，False = 强制直连
-            "need_proxy": None if row["need_proxy"] is None else bool(row["need_proxy"])}
+            "need_proxy": None if row["need_proxy"] is None else bool(row["need_proxy"]),
+            # 每域名显示偏好（{sort, fields[], tag}）与抓取规则
+            "prefs": prefs,
+            "auto_fetch": None if row["auto_fetch"] is None else bool(row["auto_fetch"]),
+            "detail_selector": row["detail_selector"] or "",
+            "cover": None if row["cover"] is None else bool(row["cover"])}
 
 
 def list_domains() -> list[dict]:
@@ -517,7 +542,9 @@ def get_domain(name: str) -> dict | None:
         return _domain_row(row) if row else None
 
 
-def update_domain(name: str, display_name=_UNSET, need_proxy=_UNSET) -> dict:
+def update_domain(name: str, display_name=_UNSET, need_proxy=_UNSET,
+                  prefs=_UNSET, auto_fetch=_UNSET, detail_selector=_UNSET,
+                  cover=_UNSET) -> dict:
     with _db() as conn:
         # 确保域名存在
         conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (name,))
@@ -528,6 +555,22 @@ def update_domain(name: str, display_name=_UNSET, need_proxy=_UNSET) -> dict:
             # None → NULL（无规则），True/False → 1/0
             value = None if need_proxy is None else (1 if need_proxy else 0)
             conn.execute("UPDATE domains SET need_proxy = ? WHERE name = ?", (value, name))
+        if prefs is not _UNSET:
+            if prefs is None:
+                prefs = {}
+            if not isinstance(prefs, dict):
+                raise ValueError("prefs 必须是对象")
+            conn.execute("UPDATE domains SET prefs = ? WHERE name = ?",
+                         (json.dumps(prefs, ensure_ascii=False), name))
+        if auto_fetch is not _UNSET:
+            value = None if auto_fetch is None else (1 if auto_fetch else 0)
+            conn.execute("UPDATE domains SET auto_fetch = ? WHERE name = ?", (value, name))
+        if detail_selector is not _UNSET:
+            conn.execute("UPDATE domains SET detail_selector = ? WHERE name = ?",
+                         (detail_selector or "", name))
+        if cover is not _UNSET:
+            value = None if cover is None else (1 if cover else 0)
+            conn.execute("UPDATE domains SET cover = ? WHERE name = ?", (value, name))
         row = conn.execute("SELECT * FROM domains WHERE name = ?", (name,)).fetchone()
         return _domain_row(row)
 
@@ -542,6 +585,24 @@ def get_domain_need_proxy(url: str) -> bool | None:
         if row is None or row["need_proxy"] is None:
             return None
         return bool(row["need_proxy"])
+
+
+def get_domain_fetch_config(url: str) -> dict:
+    """该域名的抓取规则（`/api/fetch` 用）：详情选择器 + 封面开关。
+    **故意不返回代理结论**——代理优先级由 server.effective_proxy 统一算
+    （URL 模式规则 > 域名规则 > 全局），在这里拿 need_proxy 去覆盖它会打乱优先级。"""
+    out = {"detail_selector": "", "cover": None}
+    domain = _root_domain(url)
+    if not domain:
+        return out
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT detail_selector, cover FROM domains WHERE name = ?", (domain,)
+        ).fetchone()
+    if row is None:
+        return out
+    return {"detail_selector": row["detail_selector"] or "",
+            "cover": None if row["cover"] is None else bool(row["cover"])}
 
 
 # ──────────────────────── 域名重置 ────────────────────────

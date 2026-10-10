@@ -1,6 +1,7 @@
 /* 卡片 DOM：建骨架 + 就地补丁（fillCard/updateCard）。 */
 import { render } from "./board.js";
 import { openDetail } from "./detail.js";
+import { updateDomainRow } from "./domain-page.js";
 import { fetchRecord } from "./fetch.js";
 import { openRename, openTag } from "./modals.js";
 import { matchesFilter, removeRecord } from "./records.js";
@@ -72,7 +73,12 @@ function fillCard(card, record) {
 
 export function updateCard(record) {
   const card = document.querySelector(`#board .card[data-url="${CSS.escape(record.url)}"]`);
-  if (!card) return;                // 所在分组还没建卡（懒建），建的时候自然用最新数据
+  if (!card) {
+    /* 不在看板卡片上 → 试试域名子页的列表行（两个视图互斥，最多只有一个存在）。
+       两者都没有（懒建分组还没建卡）就是 no-op，建的时候自然用最新数据 */
+    updateDomainRow(record);
+    return;
+  }
   if (!matchesFilter(record)) {     // 改名/抓取后掉出当前筛选 → 只能整页重排
     render();
     return;

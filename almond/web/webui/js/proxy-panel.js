@@ -1,6 +1,7 @@
 /* 代理映射面板 + 域名管理弹窗（它唯一的开启方）。 */
 import { render } from "./board.js";
-import { loadProxyDomains, loadRecords } from "./records.js";
+import { goToDomain } from "./domain-page.js";
+import { loadDomainConfig, loadProxyDomains, loadRecords } from "./records.js";
 import { $, el, setStatus, state } from "./state.js";
 
 /* ---------- 域名管理 ---------- */
@@ -43,9 +44,13 @@ export async function resetDomain() {
     $("domainMask").hidden = true;
     state.domainTarget = null;
     if (state.selectedDomain === old) state.selectedDomain = null;
+    /* 正看着这个域名的子页 → 把子页切到新域名（旧域名已经不存在了）。
+       先写 hash：下面 await 期间 hashchange 会把 state.domainPage 更新好 */
+    if (state.domainPage === old) goToDomain(data.new);
     // 都要 await：两者的 render() 都会重写状态栏，提示必须放在最后
     await loadRecords();
     await loadProxyDomains();
+    await loadDomainConfig();
     const total = data.total || 0;
     const failed = data.failed || 0;
     const rules = data.rules || 0;
@@ -86,6 +91,7 @@ export async function saveDomain() {
     });
     render();
     loadProxyDomains(); // 域名规则变化 → 刷新侧边栏代理标记
+    loadDomainConfig(); // 别名/域名配置缓存也要跟着新（子页域头直接读它）
     const label = need_proxy === null ? "跟随全局" : (need_proxy ? "用代理" : "直连");
     setStatus(`已更新域名 ${name}（${label}）`);
   } catch (e) {
@@ -125,23 +131,34 @@ async function renderProxyPanel() {
     if (!(data.rules || []).length) ruleBox.appendChild(el("div", "rule-empty", "暂无规则"));
   } catch { ruleBox.textContent = "加载失败"; }
 
-  /* 域名规则 */
+  /* 域名：**全部**列出，不再只显示有域名规则的——
+     侧栏只收条数 ≥10 的域名，零散域名（以及条数少的小站）只能从这里进子页 */
   const domBox = $("domainProxyList");
   domBox.innerHTML = "";
   try {
     const data = await (await fetch("/api/domains")).json();
-    const withRule = (data.domains || []).filter(d => d.need_proxy !== null);
-    for (const d of withRule) {
+    const all = (data.domains || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    for (const d of all) {
       const row = el("div", "rule-row");
       const nameBtn = el("span", "rule-pattern link", d.name);
+      nameBtn.title = "点域名名：编辑别名 / 代理规则 / 域名重置";
       nameBtn.addEventListener("click", () => { $("proxyMask").hidden = true; openDomain(d.name); });
       row.appendChild(nameBtn);
-      row.appendChild(el("span", "rule-proxy" + (d.need_proxy ? "" : " direct"),
-        d.need_proxy ? "用代理" : "直连"));
-      row.appendChild(el("span", "rule-note", "点域名可编辑"));
+      row.appendChild(
+        d.need_proxy === null || d.need_proxy === undefined
+          ? el("span", "rule-note", "跟随全局")
+          : el("span", "rule-proxy" + (d.need_proxy ? "" : " direct"), d.need_proxy ? "用代理" : "直连")
+      );
+      const enter = el("button", "rule-enter", "详情");
+      enter.title = `进入 ${d.name} 的子页面`;
+      enter.addEventListener("click", () => {
+        $("proxyMask").hidden = true;
+        goToDomain(d.name);
+      });
+      row.appendChild(enter);
       domBox.appendChild(row);
     }
-    if (!withRule.length) domBox.appendChild(el("div", "rule-empty", "暂无域名级规则（都在跟随全局）"));
+    if (!all.length) domBox.appendChild(el("div", "rule-empty", "还没有任何域名"));
   } catch { domBox.textContent = "加载失败"; }
 }
 

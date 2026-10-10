@@ -15,7 +15,7 @@ from almond.core.fetcher import get_metadata
 from almond.core.proxy import detect_proxy
 from almond.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
-    get_domain_need_proxy, get_storage_paths, insert_quick_records,
+    get_domain_fetch_config, get_domain_need_proxy, get_storage_paths, insert_quick_records,
     list_domains, list_pending_urls, list_proxy_domains, list_proxy_rules, list_records,
     list_tags,
     match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
@@ -175,7 +175,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "网址必须以 http:// 或 https:// 开头"}, 400)
                 return
             proxy = effective_proxy(url, global_proxy)
-            meta = get_metadata(url, proxy=proxy)
+            # 域名级抓取规则：详情选择器 + 封面开关。
+            # 代理不用这里的 need_proxy——effective_proxy 已经按
+            # 「URL 模式规则 > 域名规则 > 全局」算好了，再覆盖会打乱优先级
+            rules = get_domain_fetch_config(url)
+            meta = get_metadata(url, proxy=proxy,
+                                selector=rules["detail_selector"] or None,
+                                cover=rules["cover"])
             merged = upsert_record(meta)
             # success 说的是**本次抓取**：record.success 是合并后的值，失败时按合并规则
             # 保留快照/旧内容（可能仍是 1），拿它计数会把失败全算成成功
@@ -268,13 +274,18 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send_json({"ok": False, "error": "缺少域名"}, 400)
                 return
+            # 只透传请求体里出现的字段（后端按 _UNSET 语义跳过没给的）：
+            # need_proxy / auto_fetch / cover 是三态（null = 跟随全局 / 默认）
             kwargs = {}
-            if "display_name" in data:
-                kwargs["display_name"] = data.get("display_name")
-            if "need_proxy" in data:
-                # None = 无规则（跟随全局），True/False = 用代理/直连
-                kwargs["need_proxy"] = data.get("need_proxy")
-            domain = update_domain(name, **kwargs)
+            for key in ("display_name", "need_proxy", "prefs",
+                        "auto_fetch", "detail_selector", "cover"):
+                if key in data:
+                    kwargs[key] = data.get(key)
+            try:
+                domain = update_domain(name, **kwargs)
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
             self._send_json({"ok": True, "domain": domain})
             return
 

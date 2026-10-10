@@ -101,8 +101,15 @@ def extract_metadata(response, base_url: str) -> dict:
     }
 
 
-def get_metadata(url: str, timeout: int = 20, proxy: str | None = None) -> dict:
-    """抓取一个 URL 的元数据；全部抓取失败时仅保留 URL，标题留空供手动补充。"""
+def get_metadata(url: str, timeout: int = 20, proxy: str | None = None,
+                 selector: str | None = None, cover: bool | None = None) -> dict:
+    """抓取一个 URL 的元数据；全部抓取失败时仅保留 URL，标题留空供手动补充。
+
+    selector：按站点覆盖详情选择器（空/None 用默认 DETAIL_SELECTOR）——
+      域名级配置（domains.detail_selector）由调用方传进来，选择器写错只会让详情为空。
+    cover：按域名的封面开关——False=不要封面，True=只要图标（拿 favicon 当封面），
+      None=默认走 og:image。
+    """
     meta = {"url": url, "title": "", "thumbnail": "", "favicon": "", "success": False, "details": []}
     response = fetch_page(url, timeout=timeout, proxy=proxy)
     if response is None:
@@ -110,8 +117,12 @@ def get_metadata(url: str, timeout: int = 20, proxy: str | None = None) -> dict:
     base_url = getattr(response, "url", None) or url
     meta.update(extract_metadata(response, base_url))
     try:
-        meta["details"] = extract_fields(response.css(DETAIL_SELECTOR))
-    except Exception:  # 解析任意 HTML 时个别页面可能出错，不影响主元数据
+        meta["details"] = extract_fields(response.css(selector or DETAIL_SELECTOR))
+    except Exception:  # 解析任意 HTML 时个别页面可能出错（含非法选择器），不影响主元数据
         meta["details"] = []
+    if cover is False:
+        meta["thumbnail"] = ""
+    elif cover is True and meta.get("favicon"):
+        meta["thumbnail"] = meta["favicon"]
     meta["success"] = True
     return meta

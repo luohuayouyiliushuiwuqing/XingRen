@@ -36,11 +36,23 @@ export function matchesFilter(record) {
   return hay.includes(state.filter);
 }
 
+/* 标签筛选单独拎出来：域名子页只按「域名 + 搜索 + 标签」取数，
+   不走 getVisibleRecords() 的域名分支（那是筛选口径，会跟子页域名打架） */
+export function matchesTag(record) {
+  if (!state.selectedTag) return true;
+  if (state.selectedTag === "__untagged__") return !record.tags || !record.tags.length;
+  return !!record.tags && record.tags.some((t) => t.name === state.selectedTag);
+}
+
 /* ---------- 当前可见记录（搜索 + 域名 + 标签过滤，render 与导出共用） ---------- */
 
 export function getVisibleRecords() {
   let visible = state.records.filter(matchesFilter);
-  if (state.selectedDomain === "__other__") {
+  /* 域名子页优先：子页口径 = 「这个域名 + 搜索 + 标签」。
+     放在这里而不是子页自己过滤，全选/反选/导出（都用本函数）的范围就自动正确 */
+  if (state.domainPage) {
+    visible = visible.filter((r) => r.domain === state.domainPage);
+  } else if (state.selectedDomain === "__other__") {
     /* 零散域名合并项：按全量计数 < MIN_GROUP 的域名成员过滤 */
     const counts = new Map();
     for (const r of state.records) {
@@ -54,13 +66,7 @@ export function getVisibleRecords() {
   } else if (state.selectedDomain) {
     visible = visible.filter(r => rootDomain(hostOf(r.url)) === state.selectedDomain);
   }
-  if (state.selectedTag) {
-    if (state.selectedTag === "__untagged__") {
-      visible = visible.filter(r => !r.tags || !r.tags.length);
-    } else {
-      visible = visible.filter(r => r.tags && r.tags.some(t => t.name === state.selectedTag));
-    }
-  }
+  visible = visible.filter(matchesTag);
   return visible;
 }
 
@@ -74,6 +80,18 @@ export async function loadProxyDomains() {
     state.proxyDomains = new Set();
   }
   render();
+}
+
+/* 域名配置缓存（GET /api/domains → state.domainConfig）：
+   补抓按它过滤 auto_fetch=0 的域名，域名子页的域头/设置也从它读。
+   拿不到就保留上一份——网络抖一下不该让补抓或页面停摆 */
+export async function loadDomainConfig() {
+  try {
+    const data = await (await fetch("/api/domains")).json();
+    state.domainConfig = new Map((data.domains || []).map((d) => [d.name, d]));
+  } catch (e) {
+    /* 保持现状 */
+  }
 }
 
 /* ---------- 删除 ---------- */

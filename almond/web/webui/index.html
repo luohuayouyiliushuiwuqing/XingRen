@@ -29,6 +29,9 @@
   <main>
     <aside id="sidebar" class="sidebar"></aside>
     <div class="board-wrap">
+      <!-- 域名子页的域头（信息 + 设置表单）。刻意放在 #board **外面**：
+           render() 会 board.innerHTML=""，表单在 #board 里会被后台渲染冲掉正在输入的内容 -->
+      <section id="domainHeader" class="domain-header-bar" hidden></section>
       <div id="board" class="board"></div>
       <div id="emptyHint" class="empty-hint" hidden>还没有书签，粘贴一个 URL 开始吧</div>
       <!-- 多选操作条：吸在 board-wrap 底部（sticky），选中任意卡片才出现 -->
@@ -143,8 +146,10 @@
       </div>
 
       <div class="proxy-section">
-        <label>域名规则（次优先，点击域名可编辑别名）</label>
+        <label>域名（点域名名可编辑别名；「详情」进入该域名的子页）</label>
         <div id="domainProxyList" class="rule-list"></div>
+        <div class="proxy-hint">这里列出全部域名（侧栏只显示条数 ≥10 的，零散域名靠这里进入子页）；
+          代理列是域名级规则，「跟随全局」表示没设域名规则。</div>
       </div>
 
       <div class="modal-actions">

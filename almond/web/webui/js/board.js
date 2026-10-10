@@ -1,9 +1,10 @@
 /* render() 及其专属机制：分片建卡、懒建观察者、占位高度、滚动保持。 */
 import { createCard } from "./cards.js";
+import { goToDomain, renderDomainPage } from "./domain-page.js";
 import { getVisibleRecords } from "./records.js";
 import { syncSelectBar } from "./selectbar.js";
 import { buildSidebar } from "./sidebar.js";
-import { $, MIN_GROUP, hostOf, rootDomain, setStatus, state } from "./state.js";
+import { $, MIN_GROUP, el, hostOf, rootDomain, setStatus, state } from "./state.js";
 
 /* ---------- 渲染 ---------- */
 
@@ -126,7 +127,9 @@ export function render() {
   const board = $("board");
   const wrap = document.querySelector(".board-wrap");
   const prevScroll = wrap ? wrap.scrollTop : 0;
-  const viewKey = [state.filter, state.selectedDomain, state.selectedTag].join(" ");
+  /* viewKey 必须带上 domainPage：看板 ↔ 子页是两个视图，
+     不带的话切过去会被当成「同一视图」，滚动位置会乱串 */
+  const viewKey = [state.filter, state.selectedDomain, state.selectedTag, state.domainPage || ""].join(" ");
   const sameView = viewKey === lastViewKey;
   lastViewKey = viewKey;
 
@@ -134,6 +137,24 @@ export function render() {
   buildSidebar();
 
   const visible = getVisibleRecords();
+
+  /* 离开子页要收起域头：它在 #board 外面，render() 的清空动作管不到它，
+     不在这里显式收起的话，退回看板后会留着一条过期的域名头 */
+  const dh = $("domainHeader");
+  if (dh) dh.hidden = true;
+
+  /* ── 域名子页：口径已在 getVisibleRecords() 里按 domainPage 过滤好 ── */
+  if (state.domainPage) {
+    resetGroupObserver();                 // 拆掉上一屏分组留下的观察者
+    renderDomainPage(board, visible);
+    /* emptyHint 保持隐藏：列表自带「没有符合条件的记录」空态，两个提示会重叠 */
+    $("emptyHint").hidden = true;
+    const all = state.records.filter((r) => r.domain === state.domainPage).length;
+    setStatus(`域名 ${state.domainPage}，共 ${all} 条，${visible.length} 条显示`);
+    if (wrap) wrap.scrollTop = sameView ? prevScroll : 0;
+    syncSelectBar();                      // 选择计数与子页行保持一致
+    return;
+  }
 
   /* 按域名分组显示 */
   let domainMap = new Map();

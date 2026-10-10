@@ -13,10 +13,12 @@ import { $, setStatus, state } from "./state.js";
 /* 只写 class / checked，绝不重建节点：选择类操作必须让 #board 的 childList
    变更保持 0（一旦触发 render() 整板重建，就是之前修过的那个闪烁坑） */
 function paintSelection() {
-  for (const card of document.querySelectorAll("#board .card")) {
-    const on = state.selectedUrls.has(card.dataset.url);
-    card.classList.toggle("selected", on);
-    const cb = card.querySelector(".card-check");
+  /* 选择器用 [data-url] 而不是 .card：看板卡片与域名子页的列表行都带 data-url，
+     一套类名/委托把两个视图的多选一起覆盖（行上也用 .card-check） */
+  for (const node of document.querySelectorAll("#board [data-url]")) {
+    const on = state.selectedUrls.has(node.dataset.url);
+    node.classList.toggle("selected", on);
+    const cb = node.querySelector(".card-check");
     if (cb) cb.checked = on;
   }
 }
@@ -157,9 +159,9 @@ export function initSelectBar() {
      监听器一直在，懒建分组后来补出来的卡片不用重新绑（也省掉 cards → selectbar 这条边） */
   $("board").addEventListener("change", (e) => {
     const cb = e.target.closest(".card-check");
-    const card = cb && cb.closest(".card");
-    if (!card) return;
-    toggleSelect(card.dataset.url, cb.checked);
+    const host = cb && cb.closest("[data-url]");   // 卡片或子页列表行
+    if (!host) return;
+    toggleSelect(host.dataset.url, cb.checked);
   });
   $("selAll").addEventListener("click", selectVisible);
   $("selNone").addEventListener("click", clearSelection);

@@ -4,7 +4,7 @@ import { updateCard } from "./cards.js";
 import { openDetail } from "./detail.js";
 import { detectProxy } from "./proxy-panel.js";
 import { loadRecords, upsert } from "./records.js";
-import { $, setStatus, state } from "./state.js";
+import { $, hostOf, rootDomain, setStatus, state } from "./state.js";
 
 /* urls=待抓（出队即删）；total/ok/fail 是本轮计数；
    running=worker 在跑；paused=已暂停（暂停位落 localStorage，
@@ -41,6 +41,17 @@ function savePaused(on) {
   } catch (e) { /* 隐私模式等：记不住就记不住，不影响本次运行 */ }
 }
 
+/* 这条 url 所属域名是否参与自动补抓（domains.auto_fetch）。
+   ⚠ 后端把三态压成 JSON 的 true/false/null —— 写成 `!== 0` 会把 false 漏判成「参与」，
+   「关」的域名照样被抓。只有**明确为 false** 才排除；null（跟随全局）= 参与；
+   没有该域名的配置也视为参与（缺配置不该让补抓停摆）。
+   **只管自动路径**：强制补抓、批量重新抓取是人工动作，压过这条规则。 */
+function autoFetchEligible(url) {
+  const cfg = state.domainConfig.get(rootDomain(hostOf(url)));
+  if (!cfg) return true;
+  return cfg.auto_fetch !== false;
+}
+
 /* ---------- 按钮：进度的权威载体 ----------
    状态栏会被 render() 的「共 N 条…」覆盖，只能当即时提示；
    按钮文案由这里统一刷，入队 / 每条完成 / 暂停与继续都会调。 */
@@ -72,7 +83,9 @@ function paintButton() {
   let pending = 0;
   let failed = 0;
   for (const r of state.records) {
-    if (!r.fetched) pending++;
+    /* 被域名规则（auto_fetch=0）排除的待抓记录不计数：
+       否则按钮一直显示「补抓 N」却永远不会变灰——自动路径根本不入队它们 */
+    if (!r.fetched) { if (autoFetchEligible(r.url)) pending++; }
     else if (!r.success) failed++;
   }
   btn.classList.remove("active");
@@ -96,8 +109,12 @@ export function enqueueBackfill(urls, note, explicit) {
      ① 在去重**之前**打 forceUrls 标记——已经在队里、正等着按自动规则被跳过的
         也要放行；② forceRun=true，本轮按钮与完成文案得写「强制补抓」；
      ③ 暂停中直接恢复——用户明确点了动作，就是让它跑 */
+  /* 自动入队（开页扫描 / 10 秒轮询 / 导入）先按域名 auto_fetch 规则筛掉；
+     explicit（人工点的强制补抓、批量重抓）不过滤——人工动作压过规则 */
+  const pool = explicit ? urls : urls.filter(autoFetchEligible);
+
   if (explicit) {
-    for (const u of urls) if (u) backfillState.forceUrls.add(u);
+    for (const u of pool) if (u) backfillState.forceUrls.add(u);
     backfillState.forceRun = true;
     if (backfillState.paused) {
       backfillState.paused = false;
@@ -106,7 +123,7 @@ export function enqueueBackfill(urls, note, explicit) {
   }
 
   const queued = new Set(backfillState.urls);
-  const add = urls.filter((u) => u && !queued.has(u) && !backfillState.inflight.has(u));
+  const add = pool.filter((u) => u && !queued.has(u) && !backfillState.inflight.has(u));
   if (!add.length) {
     /* 早返回也得救一把：暂停态下 workers 已经退出，队里若还排着东西，
        没人会再拉起它——这时必须自己 runBackfill()，否则点了「重新抓取」
@@ -258,7 +275,9 @@ async function runBackfill() {
            因此连**已抓成功**的记录也能重抓（旧规则里的 rec.success 会把它拦下） */
       const rec = state.records.find((r) => r.url === url);
       const forced = backfillState.forceUrls.delete(url);
-      if (!rec || (rec.fetched && !forced)) {
+      /* 附带一条：域名的 auto_fetch 规则若在排队期间被改成「关」，
+         自动入队的这条就地跳过；人工标记的照抓（explicit 压过规则） */
+      if (!rec || (rec.fetched && !forced) || (!forced && !autoFetchEligible(url))) {
         backfillState.skip++;
         paintButton();
         continue;
