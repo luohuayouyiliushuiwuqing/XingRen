@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlparse
 
 from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
 
+from almond.core import fetch_hints
 from almond.core.fields import extract_fields
 
 # 详情区块选择器：抓取成功后顺带解析「标签: 值」字段，无匹配时 details 为空列表
@@ -48,28 +49,53 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     """按 Fetcher → DynamicFetcher → StealthyFetcher 降级抓取，成功返回 Response，全部失败返回 None。
 
     国内网站自动跳过代理直连；外国站配置代理时先用代理抓取，代理不可用则回退直连重试整条降级链。
+    经验缓存（fetch_hints）介入三处：
+    - 已知直连不通的域名：没代理 / 代理转发不通 → 直接跳过并打日志，不再烧满三级重试；
+    - 代理可用且已知直连不通 → **只跑代理组合**，不再跑直连兜底；
+    - 代理端口在但转发不通 → 本轮降级直连（能直连的照跑；不能的上面已拦）。
+    每次结果回写经验：直连网络失败记 direct=False，收到任何响应记对应链路可达。
     """
     if proxy and _is_domestic(url):
         print(f"  国内站点，跳过代理直连：{urlparse(url).hostname}")
         proxy = None
+
+    reason = fetch_hints.skip_reason(url, proxy)
+    if reason:
+        print(f"  跳过抓取：{reason}")
+        return None
+    if proxy and not fetch_hints.proxy_reachable(proxy):
+        print(f"  代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
+        proxy = None
+
     engines = (
         lambda p: Fetcher.get(url, timeout=timeout, proxy=p),
         # 浏览器抓取器的 timeout 单位是毫秒，与 Fetcher（秒）不同
         lambda p: DynamicFetcher.fetch(url, timeout=timeout * 1000, proxy=p),
         lambda p: StealthyFetcher.fetch(url, timeout=timeout * 1000, proxy=p),
     )
+    proxy_only = bool(proxy) and fetch_hints.proxy_needed(url)
+    if proxy_only:
+        print(f"  经验缓存：{urlparse(url).hostname} 直连不通，仅走代理抓取")
     combos: list[tuple] = [(engine, proxy) for engine in engines] if proxy else []
-    combos += [(engine, None) for engine in engines]
+    if not proxy_only:
+        combos += [(engine, None) for engine in engines]
     for i, (engine, p) in enumerate(combos):
-        if proxy and i == len(engines):
+        if proxy and not proxy_only and i == len(engines):
             print("  代理抓取失败，回退直连重试…")
         try:
             response = engine(p)
         except Exception as exc:  # 网络错误、代理/浏览器不可用、反爬拦截等都走降级
+            if p is None and fetch_hints.is_network_error(str(exc)):
+                fetch_hints.record_direct_failure(url)   # 直连网络不可达 → 记入经验
             via = f"（代理 {p}）" if p else ""
             print(f"  抓取失败{via}（{type(exc).__name__}: {exc}），尝试下一抓取器…")
             continue
         status = getattr(response, "status", None)
+        # 收到 HTTP 响应（任何状态码）= 这条链路连得上远程，回写经验
+        if p is None:
+            fetch_hints.record_direct_success(url)
+        else:
+            fetch_hints.record_proxy_success(url)
         if response is not None and (status is None or status < 400):
             return response
         print(f"  抓取返回 HTTP {status}，尝试下一抓取器…")
