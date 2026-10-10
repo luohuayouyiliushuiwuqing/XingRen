@@ -6,7 +6,6 @@
 import json
 import os
 import re
-import shutil
 import sqlite3
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
@@ -15,7 +14,7 @@ from urllib.parse import urlparse
 
 # 仓库根：parents[0]=core, [1]=almond, [2]=仓库根（ALMOND_DATA_DIR 可兜底覆盖）。
 # config.json 固定放这里——它只记录「本地数据放在哪个存储目录」，必须跟着代码走。
-# 数据库、图片缓存等本地私有数据统一放在「存储目录」：默认仓库根，UI 里可整体迁移。
+# 数据库、图片缓存等本地私有数据统一放在「存储目录」：默认仓库根，UI 里可切换（不迁移、旧数据留原地）。
 _BASE_DIR = Path(os.environ.get("ALMOND_DATA_DIR") or Path(__file__).resolve().parents[2])
 CONFIG_PATH = _BASE_DIR / "config.json"
 
@@ -39,6 +38,21 @@ def _save_config(cfg: dict) -> None:
 _cfg = _load_config()
 DATA_DIR = Path(_cfg["storage_dir"]).expanduser() if _cfg.get("storage_dir") else _BASE_DIR
 DB_PATH = DATA_DIR / "metadata.db"
+
+# 存储纪元：每次真实切换目录 +1。切换前发起的抓取，完成后比对纪元不一致 → 结果作废
+# （防止旧库的 URL 被写进新库、旧经验写进新缓存）。同一目录重复保存不递增。
+_STORAGE_EPOCH = 0
+# 切库后的回调（fetch_hints 在 import 时注册自己的内存缓存重置）
+_STORAGE_LISTENERS: list = []
+
+
+def storage_epoch() -> int:
+    return _STORAGE_EPOCH
+
+
+def on_storage_changed(callback) -> None:
+    """注册切库回调；切换成功后按注册顺序执行（异常单个吞掉，不阻断切换）。"""
+    _STORAGE_LISTENERS.append(callback)
 
 # domains 表的老库回填只按库跑一次（见 _ensure 里的用法）。
 # 比对 DB_PATH 而不是写死布尔：切换存储目录后指向新库，会自动重跑一次。
@@ -292,16 +306,18 @@ def get_cache_dir() -> Path:
     return DATA_DIR / "cache" / "img"
 
 
-def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
-    """切换存储目录：数据库、图片缓存等本地私有数据整体迁移过去。
+def set_storage_dir(new_dir: str) -> dict:
+    """切换存储目录：**不迁移，新目录从零开始**（用户定的语义）。
 
-    - 目录不存在则创建；相对路径按仓库根解析，传入文件而不是目录时拒绝
-    - 目标已有 metadata.db：直接使用它（不覆盖、不迁移旧库，旧库留在原处）
-    - 目标没有数据库时 migrate=True：SQLite backup 迁移（含 WAL 合并）后删除旧文件、
-      cache/ 整体并入目标——项目目录不再残留本地数据
-    - 结果写入 config.json（仓库根），下次启动沿用；调用后立即生效，无需重启
+    - 旧数据库与缓存（图片、经验缓存）**原样留在原目录**——想用回旧数据随时切回去；
+    - 目标已有 `metadata.db` 则直接使用它（只校验合法，内容不动）；没有则由下次连接
+      自动创建**空库**；目录不存在会创建；相对路径按仓库根解析，传入文件则拒绝；
+    - 同路径重复保存是 no-op（不递增纪元）；
+    - 切换成功：存储纪元 +1（**切换前发起的抓取结果从此作废**）、依次执行
+      `on_storage_changed` 注册的回调（fetch_hints 借此丢弃内存里的旧经验）、
+      历史位置记录新旧两处；结果写 config.json，下次启动沿用，调用后立即生效。
     """
-    global DATA_DIR, DB_PATH
+    global DATA_DIR, DB_PATH, _STORAGE_EPOCH
     raw = (new_dir or "").strip()
     if not raw:
         raise ValueError("目录不能为空")
@@ -316,8 +332,6 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
         raise ValueError(f"路径无效：{exc}") from exc
 
     old_data_dir = DATA_DIR
-    old_db = Path(DB_PATH)
-    old_cache = old_data_dir / "cache"
     try:
         same = target == old_data_dir.resolve()
     except OSError:
@@ -327,47 +341,28 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
         cfg = _load_config()
         _push_storage_history(cfg, str(target))   # 升级后的老配置首条历史从这里补上
         _save_config(cfg)
-        return {**get_storage_paths(), "migrated": False}
+        return {**get_storage_paths(), "db_used_existing": DB_PATH.exists()}
 
     target.mkdir(parents=True, exist_ok=True)
     dst_db = target / "metadata.db"
-    migrated = False
-    db_used_existing = False
-    if dst_db.exists():
-        # 目标已有数据库：直接使用它——不覆盖、不迁移旧库（旧库留在原处）
+    db_used_existing = dst_db.exists()
+    if db_used_existing:
+        # 目标已有数据库：直接使用——只校验是合法 SQLite，内容一概不动
         try:
             probe = sqlite3.connect(dst_db)
             probe.execute("SELECT count(*) FROM sqlite_master")
             probe.close()
         except sqlite3.DatabaseError as exc:
             raise ValueError(f"目标目录的 metadata.db 不是有效的 SQLite 数据库：{dst_db}") from exc
-        db_used_existing = True
-    elif migrate and old_db.exists():
-        # backup 会把 WAL 中未合并的数据一并写进目标，得到自包含的新库文件
-        src = sqlite3.connect(old_db)
-        dst = sqlite3.connect(dst_db)
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-            src.close()
-        for leftover in (old_db, Path(str(old_db) + "-wal"), Path(str(old_db) + "-shm")):
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:
-                pass  # 删不掉只是旧文件残留，不影响新目录使用
-        migrated = True
-    if migrate and old_cache.exists():
-        dst_cache = target / "cache"
-        if dst_cache.exists():
-            shutil.copytree(old_cache, dst_cache, dirs_exist_ok=True)
-            shutil.rmtree(old_cache, ignore_errors=True)
-        else:
-            shutil.move(str(old_cache), str(dst_cache))
-        migrated = True
 
     DATA_DIR = target
     DB_PATH = dst_db
+    _STORAGE_EPOCH += 1                      # 从此刻起，旧纪元的抓取结果作废
+    for _cb in list(_STORAGE_LISTENERS):
+        try:
+            _cb()
+        except Exception:  # noqa: BLE001 —— 回调失败不阻断切换
+            pass
     cfg = _load_config()
     if target == _BASE_DIR:
         cfg.pop("storage_dir", None)  # 切回默认目录，配置无需冗余记录
@@ -378,7 +373,7 @@ def set_storage_dir(new_dir: str, migrate: bool = True) -> dict:
     _push_storage_history(cfg, str(old_data_dir))
     _push_storage_history(cfg, str(target))
     _save_config(cfg)
-    return {**get_storage_paths(), "migrated": migrated, "db_used_existing": db_used_existing}
+    return {**get_storage_paths(), "db_used_existing": db_used_existing, "epoch": _STORAGE_EPOCH}
 
 
 # ──────────────────────── Records ────────────────────────

@@ -211,9 +211,10 @@
             <button id="fsPick" class="btn-primary">选中此目录</button>
           </div>
         </div>
-        <div class="proxy-hint">目录不存在会自动创建；目标里已有数据库就直接使用它（不覆盖）。
-          没有数据库时，保存会把数据库（metadata.db）、图片缓存（cache/）等本地私有数据
-          整体迁移过去，原位置文件移走，不再占用项目目录；立即生效，无需重启。</div>
+        <div class="proxy-hint"><b>切换不迁移</b>：旧数据库与缓存原样留在原目录（随时可切回）；
+          新目录已有数据库则直接使用，没有就从零开始（首次连接自动创建）。
+          切换瞬间会中止进行中的抓取、清空补抓队列与选择/搜索/筛选等状态，再全量加载新目录；
+          立即生效，无需重启。</div>
       </div>
       <div class="modal-actions">
         <button id="dbClose" class="btn-ghost">关闭</button>

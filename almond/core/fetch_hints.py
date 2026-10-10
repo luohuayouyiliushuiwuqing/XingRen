@@ -13,8 +13,8 @@
    成功即返回；HTTP ≥400 视为失效弃用，回退策略/常规链；网络类异常不弃（不是 Cookie 的错）。
 
 数据放**存储目录的 cache/ 下**（`cache/fetch_hints.json`，JSON 缓存而非关键数据）：
-随 `set_storage_dir()` 整体迁移；删掉这个文件即重置全部学习结果。
-按**根域名**记录：`direct`/`proxy`（三态可达性）+ `strategy`（{id, last_success}）。
+**切换存储目录不迁移本文件**——新目录从零开始，旧经验留在旧目录；删掉文件即重置全部学习。
+按**根域名**记录：`direct`/`proxy`（三态可达性）+ `strategy`（{id, last_success}）+ `cookie`。
 
 线程安全：模块级 RLock，读写文件原子替换（ThreadingHTTPServer + 补抓 5 并发）。
 """
@@ -56,6 +56,23 @@ _NETWORK_MARKERS = (
 _LOCK = threading.RLock()
 _DATA: dict | None = None                                   # {"hosts": {域名: 经验行}}
 _HEALTH: dict[str, tuple[bool, float]] = {}                 # 代理地址 → (是否可用, 探测时刻)
+
+# 存储纪元写守卫：fetch_page 入口 enter_fetch() 绑定当前纪元；抓取期间切换了存储目录
+# → 后续写入（经验/策略/Cookie）全部静默作废，绝不把旧项目的学习写进新目录。
+_FETCH_EPOCH = threading.local()
+
+
+def enter_fetch() -> int:
+    """fetch_page 入口调用：绑定本次抓取所属的存储纪元。"""
+    epoch = records.storage_epoch()
+    _FETCH_EPOCH.epoch = epoch
+    return epoch
+
+
+def _write_allowed() -> bool:
+    """未绑定纪元（脚本直接调 record_* 等）或纪元仍一致 → 允许写。"""
+    epoch = getattr(_FETCH_EPOCH, "epoch", None)
+    return epoch is None or epoch == records.storage_epoch()
 
 
 def path() -> Path:
@@ -103,6 +120,8 @@ def _domain(url: str) -> str:
 
 def _touch(url: str, key: str, value: bool) -> None:
     """记一条经验；值没变化就不落盘（并发高频调用下避免写放大）。"""
+    if not _write_allowed():
+        return
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].setdefault(domain, {})
@@ -252,6 +271,8 @@ def save_strategy(url: str, strategy_id: str, ms: int | None = None) -> None:
     当选规则：同 id 刷新；当前无策略 / 当前无历史成绩（升级前的老数据）/ 本次更快 → 当选；
     比当前慢 → 只进成绩册当备胎。每次成功都刷新 last_success（7 天复验凭证）。
     """
+    if not _write_allowed():
+        return
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].setdefault(domain, {})
@@ -306,6 +327,8 @@ def drop_strategy(url: str, strategy_id: str | None = None) -> None:
     被弃用的正是活跃位时，**顺位给成绩册里第二快的**（曾经成功过、还没被证伪）；
     成绩册清空则整个移除，等下一轮被拦时重新定制。
     """
+    if not _write_allowed():
+        return
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].get(domain)
@@ -374,6 +397,8 @@ def set_cookie(url: str, value: str) -> None:
 
     人工写入 = 明确意图，顺带**解除**失效防抖（`cookie_failed_at`）。
     """
+    if not _write_allowed():
+        return
     domain = _domain(url)
     value = (value or "").strip()
     with _LOCK:
@@ -397,6 +422,8 @@ def get_cookie(url: str) -> dict | None:
 def touch_cookie(url: str, ms: int | None = None, response=None) -> None:
     """Cookie 直取成功：刷新 last_success、记耗时（best_ms 取最小）；
     响应里若带了新的 Set-Cookie（会话轮换），合并进已存的值里。"""
+    if not _write_allowed():
+        return
     domain = _domain(url)
     with _LOCK:
         ck = _load()["hosts"].get(domain, {}).get("cookie")
@@ -421,6 +448,8 @@ def touch_cookie(url: str, ms: int | None = None, response=None) -> None:
 def drop_cookie(url: str) -> None:
     """Cookie 失效（HTTP ≥400）→ 弃用，并记 `cookie_failed_at` 进入 7 天防抖期
     （期间自动回传被禁止；人工 set_cookie 或防抖到期后恢复）。"""
+    if not _write_allowed():
+        return
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].get(domain)
@@ -456,6 +485,8 @@ def store_cookie_from_response(url: str, response) -> bool:
     自动回传被禁止——否则「静态成功存入 → 下次带 Cookie 403 → 弃用 → 又存入」会循环
     白跑。人工 set_cookie 不受此限。
     """
+    if not _write_allowed():
+        return False
     new = _resp_cookies(response)
     if not new:
         return False
@@ -475,3 +506,13 @@ def store_cookie_from_response(url: str, response) -> bool:
         row["updated"] = now
         _save()
     return True
+
+
+def _on_storage_changed() -> None:
+    """切库监听（由 records.set_storage_dir 触发）：丢弃内存中的经验缓存——
+    下一次 _load 落到**新目录**（新目录没有本文件就从空开始，绝不带旧项目的学习）。"""
+    global _DATA
+    _DATA = None
+
+
+records.on_storage_changed(_on_storage_changed)

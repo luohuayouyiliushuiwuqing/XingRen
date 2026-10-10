@@ -1,6 +1,13 @@
-/* 存储目录面板与目录点选。 */
-import { loadRecords } from "./records.js";
-import { $, el, setStatus } from "./state.js";
+/* 存储目录面板与目录点选。
+   切换语义（用户定的）：**不迁移，新目录从零开始**——旧数据留在原地；
+   切换瞬间：中止在途抓取（服务端存储纪元兜底丢弃结果）、清空补抓队列与
+   选择/搜索/筛选/子页等界面状态，然后全量加载新目录并重启补抓扫描。 */
+import { resetBackfill, startBackfill } from "./backfill.js";
+import { closeDetail } from "./detail.js";
+import { abortAllFetches } from "./fetch.js";
+import { leaveDomainPage } from "./domain-page.js";
+import { loadDomainConfig, loadProxyDomains, loadRecords } from "./records.js";
+import { $, el, setStatus, state } from "./state.js";
 
 /* ---------- 存储目录（数据库、缓存等本地私有数据的统一存放处） ---------- */
 export const fsState = { path: "", parent: "", storage: "" };
@@ -31,7 +38,7 @@ function renderHistory(history) {
       row.appendChild(el("span", "db-hist-cur", "当前"));
     } else {
       btn.addEventListener("click", async () => {
-        $("dbPathInput").value = p;   // 填入再走统一保存流程（迁移、刷新记录、状态提示都在里面）
+        $("dbPathInput").value = p;   // 填入再走统一保存流程（切库、断旧任务、刷新记录都在里面）
         await saveDbPath();
       });
       row.appendChild(btn);
@@ -119,33 +126,56 @@ export async function saveDbPath() {
     return;
   }
   $("dbSave").disabled = true;
-  setStatus("正在迁移存储目录（数据库 + 缓存）…", "busy");
+  setStatus("正在切换存储目录（新目录从零开始，旧任务将立即中止）…", "busy");
   try {
+    // 先切库（服务端纪元 +1，之后返回的旧抓取结果一律作废），失败则什么都没动
     const resp = await fetch("/api/storage-dir", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, migrate: true }),
+      body: JSON.stringify({ path }),
     });
     const data = await resp.json();
     if (!data.ok) {
       setStatus("切换失败：" + data.error, "err");
       return;
     }
+    // ① 断掉在途抓取 ② 清空补抓队列/轮询/计数（代际 +1，旧 worker 收口不再碰状态）
+    abortAllFetches();
+    resetBackfill();
+
     fsState.storage = data.path;
     $("dbCurrent").textContent =
       `目录: ${data.path}\n数据库: ${data.db_path}\n图片缓存: ${data.cache_dir}`;
     renderHistory(data.history || []);   // 新目录已进历史，列表跟着刷新
     $("dbPathInput").value = "";
     $("fsPicker").hidden = true;
-    await loadRecords(); // 从新存储目录重新加载
+
+    // ③ 界面状态归零：旧数据的多选/搜索/筛选/子页/弹层全部退场
+    state.selectedUrls.clear();
+    state.filter = "";
+    $("searchInput").value = "";
+    state.selectedDomain = null;
+    state.selectedTag = null;
+    state.renameTarget = null;
+    state.tagTarget = null;
+    state.tagTargets = null;
+    state.domainTarget = null;
+    closeDetail();
+    leaveDomainPage();          // 退出域名子页（内部 render 一次，马上被 loadRecords 覆盖）
+    state.domainConfig = new Map();    // 旧域名配置绝不带进新目录
+    state.proxyDomains = new Set();
+
+    // ④ 全量加载新目录 + 重启补抓扫描/轮询
+    await loadRecords();
+    await loadDomainConfig();
+    await loadProxyDomains();
+    startBackfill("存储已切换，扫描新目录");
     setStatus(
       `存储目录已切换到 ${data.path}` +
         (data.db_used_existing
-          ? "（已直接使用该目录现有的数据库）"
-          : data.migrated
-            ? "（数据与缓存已迁移）"
-            : "") +
-        `，共 ${data.records} 条`
+          ? "（使用该目录现有数据库）"
+          : "（新目录，从零开始）") +
+        `；旧任务已中止、状态已重置 · 共 ${data.records} 条`
     );
   } catch (e) {
     setStatus("切换失败：" + e.message, "err");

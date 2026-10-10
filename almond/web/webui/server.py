@@ -21,7 +21,7 @@ from almond.core.records import (
     list_domains, list_pending_urls, list_proxy_domains, list_proxy_rules, list_records,
     list_tags,
     match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
-    set_storage_dir, set_title, update_domain, upsert_proxy_rule, upsert_record,
+    set_storage_dir, set_title, storage_epoch, update_domain, upsert_proxy_rule, upsert_record,
 )
 from almond.web.webui import fsbrowse, imgproxy
 from almond.web.webui.staticfiles import CONTENT_TYPES, resolve_static
@@ -186,9 +186,16 @@ class Handler(BaseHTTPRequestHandler):
             # 代理不用这里的 need_proxy——effective_proxy 已经按
             # 「URL 模式规则 > 域名规则 > 全局」算好了，再覆盖会打乱优先级
             rules = get_domain_fetch_config(url)
+            start_epoch = storage_epoch()   # 抓取期间切了库 → 结果作废，绝不写进新库
             meta = get_metadata(url, proxy=proxy,
                                 selector=rules["detail_selector"] or None,
                                 cover=rules["cover"])
+            if storage_epoch() != start_epoch:
+                self._send_json({
+                    "ok": True, "stale": True, "success": False,
+                    "error": "存储已切换，本次抓取结果已丢弃",
+                })
+                return
             merged = upsert_record(meta)
             # success 说的是**本次抓取**：record.success 是合并后的值，失败时按合并规则
             # 保留快照/旧内容（可能仍是 1），拿它计数会把失败全算成成功
@@ -238,10 +245,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/api/storage-dir", "/api/db-path"):
-            # 切换存储目录：数据库、图片缓存等本地私有数据整体迁移，立即生效
+            # 切换存储目录：**不迁移**——旧数据留在原地，新目录从零开始；
+            # 纪元 +1 作废在途抓取，fetch_hints 同步丢弃内存缓存
             new_dir = (data.get("path") or "").strip()
             try:
-                result = set_storage_dir(new_dir, migrate=bool(data.get("migrate", True)))
+                result = set_storage_dir(new_dir)
             except (ValueError, OSError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
                 return

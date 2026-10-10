@@ -2,6 +2,7 @@
    是**强制补抓**，连抓过失败的一起重跑。两者都不改服务端，只是入队集合不同。 */
 import { updateCard } from "./cards.js";
 import { openDetail } from "./detail.js";
+import { postFetch } from "./fetch.js";
 import { detectProxy } from "./proxy-panel.js";
 import { loadRecords, upsert } from "./records.js";
 import { $, hostOf, rootDomain, setStatus, state } from "./state.js";
@@ -15,6 +16,9 @@ import { $, hostOf, rootDomain, setStatus, state } from "./state.js";
 export const backfillState = {
   urls: [], total: 0, ok: 0, fail: 0, skip: 0, running: false, paused: false, note: "",
   inflight: new Set(),
+  /* gen：**轮次代际**。切换存储目录时 +1（resetBackfill）——旧轮次的 worker/轮询
+     收口时按代际早退，绝不把旧项目的计数、状态、入队带到新目录。 */
+  gen: 0,
   /* forceUrls：**人工点进来**要抓的 url —— 强制补抓的失败记录、多选操作条
      「重新抓取」指定的那批（可能含已抓成功的）。出队复查默认跳过「已尝试过」的记录，
      靠这个集合无条件放行；自动路径永远不会往它里面写（入队来源只喂 fetched=0），
@@ -102,6 +106,23 @@ function paintButton() {
   btn.title = "点击强制补抓：从未抓过的和抓取失败的一起重跑（自动补抓只跑从未抓过的）";
 }
 
+/* ---------- 切换存储等场景：整队作废 ---------- */
+
+/** 立即清空补抓队列并使旧轮次作废（在途请求由 abortAllFetches 中止、
+    服务端以存储纪元丢弃结果；这里的代际让旧 worker/轮询收口时不再碰任何状态）。 */
+export function resetBackfill() {
+  backfillState.gen++;
+  backfillState.urls.length = 0;
+  backfillState.inflight.clear();
+  backfillState.forceUrls.clear();
+  backfillState.forceRun = false;
+  backfillState.total = backfillState.ok = backfillState.fail = backfillState.skip = 0;
+  backfillState.note = "";
+  backfillState.running = false;   // 旧 worker 的 Promise.all 收口按代际早退，不会覆盖这里
+  clearTimeout(pollTimer);
+  paintButton();                   // 按钮先按当前 records 复位（随后 loadRecords 会再刷）
+}
+
 /* ---------- 入队 ---------- */
 
 export function enqueueBackfill(urls, note, explicit) {
@@ -175,28 +196,33 @@ function schedulePoll() {
 }
 
 function pollPending() {
+  const gen = backfillState.gen;
   fetch("/api/records/pending")
     .then((r) => r.json())
     .then((data) => {
+      if (gen !== backfillState.gen) return;   // 已切存储：本响应作废，不入队也不续轮询
       const urls = (data && data.urls) || [];
       /* 有本地列表里还没有的记录 → 先补一次列表再入队：出队复查会把
          「不在 state.records 里」当成已删除跳过，不等 loadRecords 会白跳一轮 */
       const known = new Set(state.records.map((r) => r.url));
       const ready = urls.some((u) => !known.has(u)) ? loadRecords() : Promise.resolve();
-      return ready.then(() => enqueueBackfill(urls));
+      return ready.then(() => {
+        if (gen === backfillState.gen) enqueueBackfill(urls);
+      });
     })
-    .then(schedulePoll)
-    .catch(() => schedulePoll());   // 服务重启这类瞬时故障：下轮再试，别把轮询断掉
+    .then(() => { if (gen === backfillState.gen) schedulePoll(); })
+    .catch(() => { if (gen === backfillState.gen) schedulePoll(); }); // 瞬时故障下轮再试
 }
 
 function startPolling() {
-  if (polling) return;
-  polling = true;
-  // 切回标签页立刻查一次，不必干等下一个 10 秒
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) { clearTimeout(pollTimer); pollPending(); }
-  });
-  schedulePoll();
+  if (!polling) {
+    polling = true;
+    // 切回标签页立刻查一次，不必干等下一个 10 秒
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) { clearTimeout(pollTimer); pollPending(); }
+    });
+  }
+  schedulePoll();   // 每次启动都重排一轮（切换存储后重启时靠它重新拉起）
 }
 
 /* 页面打开时调：扫一遍库里 fetched=0 的（插入顺序 = 后端 ORDER BY rowid），
@@ -256,6 +282,7 @@ export function toggleBackfill() {
 async function runBackfill() {
   if (backfillState.running || backfillState.paused) return;
   if (!backfillState.urls.length) { paintButton(); return; }
+  const gen = backfillState.gen;          // 本所属轮次；切存储后 gen+1，一切旧状态作废
   backfillState.running = true;
 
   /* 开跑前先更新一次代理端口：页面开着期间代理可能才起来、或者换过端口，
@@ -263,9 +290,10 @@ async function runBackfill() {
      探到才写入，探不到保持原配置；面板里手填过的地址不覆盖）。
      每轮只探一次，不逐条探。 */
   if (!state.proxyManual) await detectProxy({ fill: true, announce: false });
+  if (gen !== backfillState.gen) return;   // 等待期间切了存储：绝不碰 running（可能已属新轮）
 
   const worker = async () => {
-    while (backfillState.urls.length && !backfillState.paused) {
+    while (gen === backfillState.gen && backfillState.urls.length && !backfillState.paused) {
       const url = backfillState.urls.shift();
       /* 出队复查——自动与人工的分界：
          · 记录已被删除 → 跳过；
@@ -291,13 +319,12 @@ async function runBackfill() {
       paintButton();
       backfillState.inflight.add(url);   // 在途：挡住下一次轮询的重复入队
       try {
-        const resp = await fetch("/api/fetch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, proxy: state.globalProxy }),
-        });
-        const data = await resp.json();
-        if (data.ok) {
+        const data = await postFetch("/api/fetch", { url, proxy: state.globalProxy });
+        if (gen !== backfillState.gen) {
+          // 切存储后返回的旧轮结果：不计数、不 upsert、不更新卡片
+        } else if (data.stale) {
+          // 服务端纪元兜底：抓取期间切库，结果已被丢弃
+        } else if (data.ok) {
           upsert(data.record);
           /* 计数按**本次抓取**成败（响应里的 success），不是 data.record.success——
              后者是合并后的值：快照导入的记录抓失败时按合并规则保留旧内容，
@@ -311,16 +338,19 @@ async function runBackfill() {
             openDetail(data.record);
           }
         } else backfillState.fail++;
-      } catch {
-        backfillState.fail++;
+      } catch (e) {
+        // AbortError = 切存储时被中止，不算失败；其余网络错误照常计
+        if (gen === backfillState.gen && (!e || e.name !== "AbortError")) backfillState.fail++;
       } finally {
         backfillState.inflight.delete(url);
       }
+      if (gen !== backfillState.gen) return;   // 已切存储：立刻退出本 worker
       paintButton();
     }
   };
 
   Promise.all(Array.from({ length: WORKERS }, () => worker())).then(() => {
+    if (gen !== backfillState.gen) return;   // 旧轮收口：状态归新轮/重置所有，一概不碰
     backfillState.running = false;
     if (backfillState.urls.length) {
       if (backfillState.paused) {

@@ -122,6 +122,7 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     3. 常规链拿到 401/403/429/503（被反爬拦）→ 在当前路由上按 _DISCOVERY_SPECS
        定制扩展策略（换指纹/真 Chrome/DoH），首个成功者入库并计时。
     """
+    fetch_hints.enter_fetch()   # 绑定存储纪元：抓取期间切库 → 本函数后续所有缓存写入作废
     if proxy and _is_domestic(url):
         logger.info(f"国内站点，跳过代理直连：{urlparse(url).hostname}")
         proxy = None
