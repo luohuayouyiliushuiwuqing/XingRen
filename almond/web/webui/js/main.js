@@ -3,6 +3,7 @@
 "use strict";
 
 import { recomputePendingGrids, render, syncCardIntrinsic } from "./board.js";
+import { backfillState, startBackfill, toggleBackfill } from "./backfill.js";
 import { updateCard } from "./cards.js";
 import { closeDetail } from "./detail.js";
 import { addUrl, fetchRecord } from "./fetch.js";
@@ -66,6 +67,7 @@ function init() {
     if (file) importFromFile(file);
     e.target.value = "";  // 允许重复选同一文件
   });
+  $("backfillBtn").addEventListener("click", toggleBackfill);
   $("exportSelect").addEventListener("change", (e) => {
     const format = e.target.value;
     e.target.value = "";  // 复位，允许重复导出同格式
@@ -162,13 +164,20 @@ function init() {
     if (e.key === "Escape" && !$("detailMask").hidden) closeDetail();
   });
 
-  loadRecords();
   loadProxyDomains(); // 先拿到走代理域名集合，回来后自动 render 打标
-  /* 页面加载时自动探测本地代理端口；探测到就采纳（未探测到保持原配置） */
-  detectProxy({ fill: true, announce: false });
+  /* 自动补抓排在「记录已载入」与「代理已探测」之后：
+     不等 loadRecords 则 state.records 还是空的，一条都挑不出来；
+     不等 detectProxy 则前几条会拿默认代理地址去抓外网。
+     链式不阻塞界面，init 仍保持同步函数（顶层 async function 会撞循环规则检查）。 */
+  loadRecords()
+    .then(() => detectProxy({ fill: true, announce: false }))
+    .then(() => startBackfill());
 }
 
 document.addEventListener("DOMContentLoaded", init);
 
 /* 控制台调试句柄：模块内函数不再挂 window，排查时从这里取 */
-window.XR = { buildSidebar, fetchRecord, getVisibleRecords, loadRecords, render, setStatus, state, updateCard };
+window.XR = {
+  backfill: { start: startBackfill, toggle: toggleBackfill, state: backfillState },
+  buildSidebar, fetchRecord, getVisibleRecords, loadRecords, render, setStatus, state, updateCard,
+};

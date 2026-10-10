@@ -1,6 +1,6 @@
-/* 导入（两阶段：快照入库→后台提取）与导出。 */
-import { updateCard } from "./cards.js";
-import { getVisibleRecords, loadRecords, upsert } from "./records.js";
+/* 导入（两阶段：快照入库→自动补抓）与导出。补抓队列本身在 backfill.js。 */
+import { enqueueBackfill } from "./backfill.js";
+import { getVisibleRecords, loadRecords } from "./records.js";
 import { $, setStatus, state } from "./state.js";
 
 /* ---------- 导出 ---------- */
@@ -86,66 +86,7 @@ function parseBookmarks(text, fileName) {
   return { isHtml: false, items };
 }
 
-/* ---------- 导入阶段二：后台提取信息（链接已全部入库，这里只补标题/详情） ---------- */
-const extractQueue = { urls: [], total: 0, ok: 0, fail: 0, running: false };
-
-function enqueueExtract(urls, note) {
-  const queued = new Set(extractQueue.urls);
-  const add = urls.filter((u) => u && !queued.has(u));
-  if (!add.length) { setStatus(note || "没有需要提取的链接"); return; }
-  if (!extractQueue.running) {
-    extractQueue.total = extractQueue.ok = extractQueue.fail = 0;  // 新一轮重新计数
-  }
-  extractQueue.urls.push(...add);
-  extractQueue.total += add.length;
-  setStatus(
-    `${note ? note + "；" : ""}待提取 ${extractQueue.total - extractQueue.ok - extractQueue.fail} 条`,
-    "busy"
-  );
-  runExtract();
-}
-
-async function runExtract() {
-  if (extractQueue.running) return;
-  extractQueue.running = true;
-
-  const worker = async () => {
-    while (extractQueue.urls.length) {
-      const url = extractQueue.urls.shift();
-      const done = extractQueue.total - extractQueue.urls.length;
-      setStatus(
-        `提取信息 ${done}/${extractQueue.total}（成功 ${extractQueue.ok}，失败 ${extractQueue.fail}）`,
-        "busy"
-      );
-      try {
-        const resp = await fetch("/api/fetch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, proxy: state.globalProxy }),
-        });
-        const data = await resp.json();
-        if (data.ok) {
-          upsert(data.record);
-          extractQueue.ok++;
-          // 就地补丁：批量提取期间不整页重绘（原先每 500ms 闪一次）
-          updateCard(data.record);
-        } else extractQueue.fail++;
-      } catch {
-        extractQueue.fail++;
-      }
-    }
-  };
-
-  await Promise.all(Array.from({ length: 5 }, () => worker()));
-  extractQueue.running = false;
-  if (extractQueue.urls.length) { runExtract(); return; }  // 等待期间又入了新任务
-  setStatus(
-    `提取完成：成功 ${extractQueue.ok}，失败 ${extractQueue.fail}（共 ${extractQueue.total} 条）`,
-    extractQueue.ok ? "" : "err"
-  );
-}
-
-/* ---------- 导入：先把链接全部入库，再提取信息 ---------- */
+/* ---------- 导入：先把链接全部入库，再自动补抓 ---------- */
 export async function importFromFile(file) {
   const text = await file.text();
   const { isHtml, items } = parseBookmarks(text, file.name);
@@ -178,13 +119,11 @@ export async function importFromFile(file) {
   await loadRecords();
   const parts = [`已入库 ${data.inserted} 条`];
   if (data.skipped) parts.push(`跳过 ${data.skipped} 条（已存在）`);
+  if (isHtml) parts.push("标题/封面已从文件读取");
 
-  /* ── 阶段二：再提取信息 ──
-     TXT 只有 URL，不抓就没有标题 → 后台队列逐条补，不阻塞看板、可继续操作；
-     HTML 的标题/封面文件里已有，详情字段仍按打开时按需抓（5000 条全抓不划算） */
-  if (isHtml) {
-    setStatus(`${parts.join("，")}；标题/封面已从文件读取，详情字段打开时按需抓取`);
-    return;
-  }
-  enqueueExtract(fresh.map((i) => i.url), parts.join("，"));
+  /* ── 阶段二：自动补抓 ──
+     两条路径进同一个后台队列（5 并发，不阻塞看板，工具栏可暂停）：
+     TXT 不抓就没标题；HTML 标题/封面文件里有，但详情字段与失效封面仍要联网。
+     本次没新增（全是已存在的）时队列自己不发状态，直接把入库结果放上去。 */
+  enqueueBackfill(fresh.map((i) => i.url), parts.join("，"));
 }

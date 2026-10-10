@@ -30,7 +30,7 @@ Almond/
 │       │   ├── staticfiles.py / imgproxy.py / fsbrowse.py
 │       │   │              # 静态文件解析 / 图片代抓 / 目录浏览（都不碰 socket）
 │       │   ├── index.html / style.css
-│       │   └── js/        # 12 个原生 ES 模块（无构建步骤），入口 main.js
+│       │   └── js/        # 13 个原生 ES 模块（无构建步骤），入口 main.js
 │       └── demo/          # 独立演示：CSS 选择器试验台（端口 8765）
 │           ├── server.py  # 静态托管 + /api/fetch（输入网址按选择器提取）
 │           └── index.html / style.css / app.js / fixture.html
@@ -75,9 +75,11 @@ python -m almond.web.webui.server [--host 0.0.0.0] [--port 4000]
 - 顶部粘贴 URL 回车「添加」；右侧搜索框过滤；`☰` 收起 / 展开左侧栏
 - 左侧栏按**域名**与**标签**筛选看板：条目数 <10 的零散域名收进「其他」，走代理的域名带「代理」徽标
 - 卡片悬停出现两处操作——缩略图右上角 **详情 / 重新抓取**，底部 **重命名 / 标签 / 删除**
-- **导入** 支持 TXT（逐条抓取）与 Raindrop HTML（快照秒级入库，点开详情时按需补抓）；**导出** 按当前可见记录导出 TXT / HTML
+- **导入** 支持 TXT 与 Raindrop HTML：链接**先全部入库**（HTML 走快照，秒级且不联网），随后**自动补抓**标题与详情；**导出** 按当前可见记录导出 TXT / HTML
+- **自动补抓** 打开页面即把库里「从未抓取过」的记录（灰点）5 条并发抓完，导入产生的新链接接着排；页面开着期间，别处（另一标签页、浏览器插件、接口导入）新进库的链接每 10 秒被发现一次，同样会自动开抓。工具栏 **补抓** 按钮**只在有事要抓时出现**，实时显示进度 `补抓 x/N`，点一下暂停、再点继续（刷新后仍记住暂停状态）。抓取失败的**不自动重试**（留红点），仍可悬停卡片手动「重新抓取」
 - **代理** 打开代理面板：填全局代理地址、配 URL 通配符规则与域名级开关；打开页面自动探测本机 7889-7899 端口
-- **存储** 打开存储面板：查看并迁移数据库、图片缓存的存放目录（整体迁移，立即生效）
+- **存储** 打开存储面板：查看并迁移数据库、图片缓存的存放目录（整体迁移，立即生效；切过的位置留在「历史位置」，可一键回切）
+- **域名管理 / 域名重置** 侧栏条目 hover「编辑」打开域名弹窗：改显示名、代理开关，或把失效域名（含其子域名）**整体重置**为新域名——完成后状态栏报出「共 N 条，成功 N，重复 N，失败 N，改写规则 N 条」
 - 点缩略图或标题在新标签打开链接
 
 ### 选择器试验台（演示）
@@ -99,13 +101,15 @@ python -m almond.web.demo.server
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/records` | 全部记录（含标签与 `fetched` 快照标记） |
-| POST | `/api/fetch` | `{url, proxy}` 抓取并合并入库，返回记录 |
+| POST | `/api/fetch` | `{url, proxy}` 抓取并合并入库，返回合并后的记录与 `success`（**本次**抓取是否成功——失败按合并规则不覆盖已有内容，`record.success` 可能仍是旧值） |
 | POST | `/api/records/quick` | `{items:[{url,title,thumbnail,favicon,tags}]}` 快照批量入库，不联网 |
+| GET | `/api/records/pending` | 未抓取记录（`fetched=0`）的 URL 列表——补抓队列的轮询源，页面开着时发现别处新进库的链接 |
 | PATCH | `/api/record` | `{url, title}` 重命名 |
 | DELETE | `/api/record?url=…` | 删除记录 |
 | GET | `/api/img?src=…&proxy=…` | 服务端代抓图片（缩略图/favicon 用，命中本地缓存不走网络） |
 | GET | `/api/domains` | 域名列表（`display_name`、`need_proxy` 三态：null 跟随全局 / 1 用代理 / 0 直连） |
 | PATCH | `/api/domain` | `{name, display_name?, need_proxy?}` 更新域名设置 |
+| POST | `/api/domain/replace` | `{old, new}` 域名重置：原域名（含子域名）在库里的全部引用整体换成新域名；返回 `total/records/merged/failed/rules`（命中 / 成功 / 重复 / 失败 / 改写规则） |
 | GET | `/api/tags` | 标签列表 |
 | POST | `/api/tag` | `{name}` 新建标签 |
 | DELETE | `/api/tag?id=…` | 删除标签 |
@@ -118,6 +122,7 @@ python -m almond.web.demo.server
 | GET、POST | `/api/proxy-detect` | 探测本机 7889-7899 代理端口，返回地址或 `null` |
 | GET | `/api/storage-dir` | 当前存储目录 / 数据库 / 缓存路径（旧 `/api/db-path` 等价） |
 | POST | `/api/storage-dir` | `{path, migrate}` 切换存储目录并整体迁移本地数据 |
+| DELETE | `/api/storage-history?path=…` | 从存储目录的历史位置里移除一条（当前目录不可移除） |
 | GET | `/api/fs/list?path=…` | 目录浏览（空 path 返回盘符 / 根，供界面点选目录） |
 
 ## 说明

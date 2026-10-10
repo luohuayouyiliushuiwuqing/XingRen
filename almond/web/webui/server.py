@@ -16,7 +16,8 @@ from almond.core.proxy import detect_proxy
 from almond.core.records import (
     add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
     get_domain_need_proxy, get_storage_paths, insert_quick_records,
-    list_domains, list_proxy_domains, list_proxy_rules, list_records, list_tags,
+    list_domains, list_pending_urls, list_proxy_domains, list_proxy_rules, list_records,
+    list_tags,
     match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
     set_storage_dir, set_title, update_domain, upsert_proxy_rule, upsert_record,
 )
@@ -95,6 +96,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/records":
             self._send_json({"records": list_records()})
             return
+        if path == "/api/records/pending":
+            # 自动补抓的轮询源：页面开着时，别处（另一标签页/插件/导入）新进库的
+            # 待抓链接靠它被发现；只回 url，比每 10 秒拉一次全量 /api/records 轻得多
+            self._send_json({"urls": list_pending_urls()})
+            return
         if path == "/api/domains":
             self._send_json({"domains": list_domains()})
             return
@@ -171,7 +177,9 @@ class Handler(BaseHTTPRequestHandler):
             proxy = effective_proxy(url, global_proxy)
             meta = get_metadata(url, proxy=proxy)
             merged = upsert_record(meta)
-            self._send_json({"ok": True, "record": merged})
+            # success 说的是**本次抓取**：record.success 是合并后的值，失败时按合并规则
+            # 保留快照/旧内容（可能仍是 1），拿它计数会把失败全算成成功
+            self._send_json({"ok": True, "record": merged, "success": bool(meta.get("success"))})
             return
 
         if path == "/api/tag":

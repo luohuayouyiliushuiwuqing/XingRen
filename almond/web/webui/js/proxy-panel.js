@@ -35,17 +35,36 @@ export async function resetDomain() {
       body: JSON.stringify({ old, new: next }),
     });
     const data = await resp.json();
-    if (!data.ok) { setStatus("域名重置失败：" + data.error, "err"); return; }
+    if (!data.ok) {
+      // 服务端单事务，走到这里必然是整体回滚——没有半截改动
+      setStatus("域名重置失败（未改动任何数据）：" + data.error, "err");
+      return;
+    }
     $("domainMask").hidden = true;
     state.domainTarget = null;
     if (state.selectedDomain === old) state.selectedDomain = null;
     // 都要 await：两者的 render() 都会重写状态栏，提示必须放在最后
     await loadRecords();
     await loadProxyDomains();
+    const total = data.total || 0;
+    const failed = data.failed || 0;
+    const rules = data.rules || 0;
+    if (!total) {
+      // 一条都没命中：多半是旧域名早就被清理过，别让人以为改了什么
+      setStatus(
+        rules
+          ? `域名重置 ${data.old} → ${data.new}：命中 0 条记录，改写规则 ${rules} 条`
+          : `域名重置 ${data.old} → ${data.new}：未找到任何包含该域名的记录，0 条改动`,
+        rules ? undefined : "err"
+      );
+      return;
+    }
     setStatus(
-      `已将 ${data.old} 替换为 ${data.new}：更新 ${data.records} 条` +
-      (data.merged ? `，合并 ${data.merged} 条` : "") +
-      (data.rules ? `，改写规则 ${data.rules} 条` : "")
+      `域名重置 ${data.old} → ${data.new}：共 ${total} 条，成功 ${data.records}` +
+      `，重复 ${data.merged || 0}，失败 ${failed}` +
+      (rules ? `，改写规则 ${rules} 条` : "") +
+      (failed && data.error ? `（${data.error}）` : ""),
+      failed ? "err" : undefined
     );
   } catch (e) {
     setStatus("域名重置失败：" + e.message, "err");

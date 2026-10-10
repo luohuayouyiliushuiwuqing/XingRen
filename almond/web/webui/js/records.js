@@ -21,7 +21,12 @@ export async function loadRecords() {
 
 export function upsert(record) {
   const i = state.records.findIndex((r) => r.url === record.url);
-  if (i >= 0) state.records[i] = record;
+  /* 原地合并，不是换对象：render() 把同一批引用存进了懒建分组的 grid.__recs，
+     详情弹层、卡片闭包也各自持着旧引用。换对象的话，补抓时卡片还没建
+     （updateCard 找不到就 return），等滚动到那儿用的还是旧数据——
+     灰点、没标题，得等下一次全量 render 才纠正。API 返回的是完整记录，
+     不存在「缺键留旧值」的问题。 */
+  if (i >= 0) Object.assign(state.records[i], record);
   else state.records.unshift(record);
 }
 

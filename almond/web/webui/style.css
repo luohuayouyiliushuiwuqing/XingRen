@@ -70,6 +70,8 @@ body {
   border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-family: inherit;
 }
 .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+/* 自动补抓进行中（与 .sidebar-item.active / .tag-item.active 同一套「开」语义） */
+.btn-ghost.active { border-color: var(--accent); color: var(--accent); }
 .export-select { width: 74px; padding-right: 6px; font-size: 13px; color: var(--muted); }
 .export-select:hover, .export-select:focus { border-color: var(--accent); color: var(--accent); }
 

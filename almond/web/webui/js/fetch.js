@@ -26,11 +26,15 @@ export async function fetchRecord(url) {
     if (state.detailTarget && state.detailTarget.url === data.record.url) {
       openDetail(data.record);
     }
+    /* 判成败用响应里的 success（本次抓取），别用 data.record.success：
+       快照导入的记录抓失败时按合并规则保留旧内容，success 还是入库时的 1，
+       拿它判断会把「三级全失败」报成「已抓取」 */
+    const fetched = data.success === undefined ? !!data.record.success : data.success;
     setStatus(
-      data.record.success
+      fetched
         ? `已抓取：${data.record.title || url}`
         : `三级抓取全部失败，已仅保存 URL：${url}`,
-      data.record.success ? "" : "err"
+      fetched ? "" : "err"
     );
     return data.record;
   } catch (e) {

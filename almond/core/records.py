@@ -40,6 +40,10 @@ _cfg = _load_config()
 DATA_DIR = Path(_cfg["storage_dir"]).expanduser() if _cfg.get("storage_dir") else _BASE_DIR
 DB_PATH = DATA_DIR / "metadata.db"
 
+# domains 表的老库回填只按库跑一次（见 _ensure 里的用法）。
+# 比对 DB_PATH 而不是写死布尔：切换存储目录后指向新库，会自动重跑一次。
+_DOMAINS_BACKFILLED_FOR: str | None = None
+
 _SCHEMA_RECORDS = """
 CREATE TABLE IF NOT EXISTS records (
     url        TEXT PRIMARY KEY,
@@ -199,12 +203,20 @@ def _ensure(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # group_name 列已不存在
 
-    # 自动填充 domains 表（从现有 records 提取域名）
-    urls = conn.execute("SELECT DISTINCT url FROM records").fetchall()
-    for row in urls:
-        domain = _root_domain(row["url"])
-        if domain:
-            conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
+    # 自动填充 domains 表（老库升级用，**按库跑一次**）
+    # 这段必须门控：_ensure 每开一条连接都会走一遍，全表扫 + 逐行 urlparse +
+    # 写语句就是 O(N)×每条连接——一次 5000 条的自动补抓会放大成 O(N²)，
+    # 且让每次连接都去抢写锁，跟真正的 upsert 抢 timeout=10。
+    # 之后新增记录的写入路径（upsert_record / insert_quick_records / update_domain）
+    # 都会同步补自己那条域名，这里的全表回填只服务「domains 表刚建起来的老库」。
+    global _DOMAINS_BACKFILLED_FOR
+    if _DOMAINS_BACKFILLED_FOR != str(DB_PATH):
+        for row in conn.execute("SELECT DISTINCT url FROM records").fetchall():
+            domain = _root_domain(row["url"])
+            if domain:
+                conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
+        # 多线程同时首开也安全：INSERT OR IGNORE 幂等，最多重复跑一次
+        _DOMAINS_BACKFILLED_FOR = str(DB_PATH)
 
 
 @contextmanager
@@ -364,6 +376,21 @@ def list_records() -> list[dict]:
         rows = conn.execute("SELECT * FROM records ORDER BY rowid").fetchall()
         tag_map = _all_tags_map(conn)
         return [_row_to_record(row, tag_map.get(row["url"], [])) for row in rows]
+
+
+def list_pending_urls(limit: int = 5000) -> list[str]:
+    """从未抓取过的记录（fetched=0），按插入顺序，只回 URL。
+
+    自动补抓的轮询数据源：页面加载时只扫一次 state.records，而别的标签页、
+    浏览器插件、导入接口随后写进库的链接不会自己冒出来，靠这个小接口发现。
+    只回 url 不回整条记录——1378 条全量 /api/records 每 10 秒拉一次太重。
+    """
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT url FROM records WHERE fetched = 0 ORDER BY rowid LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r["url"] for r in rows]
 
 
 def get_record(url: str) -> dict | None:
@@ -581,7 +608,13 @@ def replace_domain(old: str, new: str) -> dict:
     覆盖：records 的 url / thumbnail / favicon / details、record_tags 关联、
     domains 表（别名与域名代理规则）、proxy_rules 中的匹配模式。
     新旧 URL 撞车（两个域名版本都导入过）时合并到新记录：标签迁过去，删旧行。
-    单事务，失败整体回滚。返回 {records, merged, domain, rules} 计数。
+    单事务，整体出错回滚；单条记录出错只回滚那一条、计为 failed，其余照改。
+    返回 {total, records, merged, failed, error, rules}，恒有
+    total == records + merged + failed：
+      total   = 命中（主机名是 old 或其子域名）的记录数，即本次重置对象；
+      records = 改写成功；
+      merged  = 重复（新域名版本已存在，并进那一条，旧行删除）；
+      failed  = 命中却没改成的（单条出错被跳过），error 给出最近一条原因。
     """
     old = _norm_domain(old)
     new = _norm_domain(new)
@@ -595,13 +628,33 @@ def replace_domain(old: str, new: str) -> dict:
         raise ValueError("新域名与原域名相同")
 
     with _db() as conn:
-        updated = merged = rules_updated = 0
+        # 显式开外层事务：行级 SAVEPOINT 必须挂在它下面——否则最外层 savepoint 一 RELEASE
+        # 就把已改的行提交了，「整体出错回滚」会退化成逐条落库；挂上去之后单条 RELEASE
+        # 只释放该条，整体仍由 with conn: 一次性收口（出错回滚、正常提交）
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        total = updated = merged = rules_updated = 0
+        last_error = None
 
         for row in conn.execute(
             "SELECT url, thumbnail, favicon, details FROM records"
         ).fetchall():
             new_url = _swap_url_domain(row["url"], old, new)
-            if new_url != row["url"]:
+            if new_url == row["url"]:
+                # 链接没命中（只有封面/详情里出现过原域名）：照改字段，但不计入重置对象
+                thumb = _swap_text_domain(row["thumbnail"], old, new)
+                favicon = _swap_text_domain(row["favicon"], old, new)
+                details = _swap_text_domain(row["details"], old, new)
+                if (thumb, favicon, details) != (row["thumbnail"], row["favicon"], row["details"]):
+                    conn.execute(
+                        "UPDATE records SET thumbnail = ?, favicon = ?, details = ? WHERE url = ?",
+                        (thumb, favicon, details, new_url),
+                    )
+                continue
+
+            total += 1
+            conn.execute("SAVEPOINT xr_row")
+            try:
                 if conn.execute(
                     "SELECT 1 FROM records WHERE url = ?", (new_url,)
                 ).fetchone():
@@ -613,22 +666,34 @@ def replace_domain(old: str, new: str) -> dict:
                     conn.execute("DELETE FROM record_tags WHERE record_url = ?", (row["url"],))
                     conn.execute("DELETE FROM records WHERE url = ?", (row["url"],))
                     merged += 1
-                    continue
-                conn.execute("UPDATE records SET url = ? WHERE url = ?", (new_url, row["url"]))
-                # OR IGNORE：新旧记录共有标签时主键不冲突，独有标签照常迁走
-                conn.execute(
-                    "UPDATE OR IGNORE record_tags SET record_url = ? WHERE record_url = ?",
-                    (new_url, row["url"]),
-                )
-                updated += 1
-            thumb = _swap_text_domain(row["thumbnail"], old, new)
-            favicon = _swap_text_domain(row["favicon"], old, new)
-            details = _swap_text_domain(row["details"], old, new)
-            if (thumb, favicon, details) != (row["thumbnail"], row["favicon"], row["details"]):
-                conn.execute(
-                    "UPDATE records SET thumbnail = ?, favicon = ?, details = ? WHERE url = ?",
-                    (thumb, favicon, details, new_url),
-                )
+                else:
+                    conn.execute(
+                        "UPDATE records SET url = ? WHERE url = ?", (new_url, row["url"])
+                    )
+                    # OR IGNORE：新旧记录共有标签时主键不冲突，独有标签照常迁走
+                    conn.execute(
+                        "UPDATE OR IGNORE record_tags SET record_url = ? WHERE record_url = ?",
+                        (new_url, row["url"]),
+                    )
+                    thumb = _swap_text_domain(row["thumbnail"], old, new)
+                    favicon = _swap_text_domain(row["favicon"], old, new)
+                    details = _swap_text_domain(row["details"], old, new)
+                    if (thumb, favicon, details) != (
+                        row["thumbnail"], row["favicon"], row["details"]
+                    ):
+                        conn.execute(
+                            "UPDATE records SET thumbnail = ?, favicon = ?, details = ? "
+                            "WHERE url = ?",
+                            (thumb, favicon, details, new_url),
+                        )
+                    updated += 1
+            except sqlite3.Error as exc:
+                # 这一条出错只丢这一条：退回行级 savepoint，其余记录照常改
+                conn.execute("ROLLBACK TO xr_row")
+                conn.execute("RELEASE xr_row")
+                last_error = f"{row['url']}：{exc}"
+            else:
+                conn.execute("RELEASE xr_row")
 
         # domains 表：改名保住别名/代理规则；new 已有行则把 old 的设置（仅在 new 缺时）并过去
         old_row = conn.execute("SELECT * FROM domains WHERE name = ?", (old,)).fetchone()
@@ -663,8 +728,10 @@ def replace_domain(old: str, new: str) -> dict:
                 )
             rules_updated += 1
 
-        return {"old": old, "new": new,
-                "records": updated, "merged": merged, "rules": rules_updated}
+        return {"old": old, "new": new, "total": total,
+                "records": updated, "merged": merged,
+                "failed": total - updated - merged, "error": last_error,
+                "rules": rules_updated}
 
 
 # ──────────────────────── Proxy rules ────────────────────────
