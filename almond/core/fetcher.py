@@ -105,6 +105,19 @@ def _exec_strategy(url: str, sid: str, timeout: int, proxy: str | None):
     raise ValueError(f"未知策略引擎：{engine}（id={sid}）")   # 旧/坏 id → 当失败弃用
 
 
+def _fetch_stale(host: str | None) -> bool:
+    """抓取期间切换了存储目录 → 立即中止剩余抓取（在每个引擎/策略开始**前**检查）。
+
+    只做检查不杀线程：单次引擎调用内部（如浏览器 20s 超时）无法安全中断，
+    但检查点之间的整段策略/三级链/反爬定制不会再烧——切库后后台日志应在
+    当前这一次引擎调用结束后停住，而不是继续跑完整条链。
+    """
+    if fetch_hints.fetch_stale():
+        logger.info(f"存储目录已切换，中止后续抓取：{host}")
+        return True
+    return False
+
+
 def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     """按 Fetcher → DynamicFetcher → StealthyFetcher 降级抓取，成功返回 Response，全部失败返回 None。
 
@@ -123,20 +136,28 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
        定制扩展策略（换指纹/真 Chrome/DoH），首个成功者入库并计时。
     """
     fetch_hints.enter_fetch()   # 绑定存储纪元：抓取期间切库 → 本函数后续所有缓存写入作废
+    host = urlparse(url).hostname
     if proxy and _is_domestic(url):
-        logger.info(f"国内站点，跳过代理直连：{urlparse(url).hostname}")
+        logger.info(f"国内站点，跳过代理直连：{host}")
         proxy = None
 
+    # 代理先做健康顶替：端口开着但转发不通 → 在本机 7889-7899 找可用端口换上，
+    # 而不是拿着坏端口往下跑（放最前面，skip_reason 也要按顶替后的地址判定；
+    # 顶替动作的日志由 ensure_working_proxy 统一打）
+    if proxy:
+        proxy = fetch_hints.ensure_working_proxy(proxy)
     reason = fetch_hints.skip_reason(url, proxy)
     if reason:
         logger.info(f"跳过抓取：{reason}")
         return None
     if proxy and not fetch_hints.proxy_reachable(proxy):
-        logger.warning(f"代理 {proxy} 转发不通，本轮降级直连：{urlparse(url).hostname}")
+        logger.warning(f"代理 {proxy} 转发不通（区间内无可用顶替端口），本轮降级直连：{host}")
         proxy = None
 
     # ── 0) Cookie 优先：存过 Cookie 就先带它静态直取一发；
     #        成功即返回（记耗时、会话轮换一并回写），失效/没存则走下面的策略与常规逻辑 ──
+    if _fetch_stale(host):
+        return None
     ck = fetch_hints.get_cookie(url)
     if ck:
         cookies = fetch_hints.parse_cookie_header(ck["value"])
@@ -169,6 +190,8 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
     # ── 1) 策略优先：先用成绩册里**最快**的打法；挂了顺位第二快，单轮最多试 3 套 ──
     tried: set = set()
     for _ in range(3):
+        if _fetch_stale(host):
+            return None
         strat = fetch_hints.get_strategy(url)
         if not strat or strat["id"] in tried:
             break
@@ -215,6 +238,8 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         combos += [(n, fn, None) for n, fn in engines]
     blocked_status: int | None = None
     for i, (ename, engine, p) in enumerate(combos):
+        if _fetch_stale(host):
+            return None
         if proxy and not proxy_only and i == len(engines):
             logger.info("代理抓取失败，回退直连重试…")
         t0 = time.time()
@@ -247,6 +272,8 @@ def fetch_page(url: str, timeout: int = 20, proxy: str | None = None):
         route = "proxy" if proxy else "direct"
         logger.warning(f"常规链被反爬拦截（HTTP {blocked_status}），定制可用策略（路由 {route}）…")
         for engine, params in _DISCOVERY_SPECS:
+            if _fetch_stale(host):
+                return None
             sid = _sid(route, engine, params)
             t0 = time.time()
             try:

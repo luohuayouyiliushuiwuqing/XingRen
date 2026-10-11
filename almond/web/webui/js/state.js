@@ -11,6 +11,10 @@ export const state = {
   globalProxy: "http://127.0.0.1:7897",  // 全局代理，在「代理」面板里编辑
   // 手填过代理地址（面板「保存」）→ 后续自动探测不再覆盖它；探测写入的值会把它复位
   proxyManual: false,
+  /* 当前存储纪元（GET /api/records / 切库响应带回）：每个 /api/fetch 请求体都带上它。
+     服务端据此在**入口**丢弃切库后才到达的旧轮请求——只靠服务端「抓取前后比对纪元」
+     挡不住这类请求（它读到的已经是新纪元，会把旧目录的 URL 写进新库）。 */
+  storageEpoch: null,
   proxyDomains: new Set(), // 最终会走代理的域名（侧边栏标记用）
   renameTarget: null,
   tagTarget: null,         // 标签弹窗的目标记录（单条）
@@ -36,6 +40,17 @@ export function setStatus(msg, kind) {
   const el = $("statusText");
   el.parentElement.className = "statusbar" + (kind ? " " + kind : "");
   el.textContent = msg;
+}
+
+/* 服务端发现配置的代理端口转发不通、已自动顶替为本机可用端口（/api/fetch 响应
+   proxy_swapped）→ 前端跟上这个地址，否则面板与后续请求还会拿着坏端口反复撞 */
+export function adoptProxy(addr) {
+  if (!addr || addr === state.globalProxy) return false;
+  state.globalProxy = addr;
+  const input = $("globalProxyInput");
+  if (input) input.value = addr;
+  setStatus(`代理端口转发不通，已自动切换为 ${addr}（后续抓取改走新端口）`);
+  return true;
 }
 
 export function hostOf(url) {

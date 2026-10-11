@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -42,6 +43,9 @@ DB_PATH = DATA_DIR / "metadata.db"
 # 存储纪元：每次真实切换目录 +1。切换前发起的抓取，完成后比对纪元不一致 → 结果作废
 # （防止旧库的 URL 被写进新库、旧经验写进新缓存）。同一目录重复保存不递增。
 _STORAGE_EPOCH = 0
+# 切库互斥锁：set_storage_dir 的目录/纪元改写 与 upsert_record_if_epoch 的
+# 「比对纪元 + 写入」必须原子——否则存在「比对通过 → 切库 → 写进新库」的窗口
+_SWITCH_LOCK = threading.RLock()
 # 切库后的回调（fetch_hints 在 import 时注册自己的内存缓存重置）
 _STORAGE_LISTENERS: list = []
 
@@ -55,8 +59,9 @@ def on_storage_changed(callback) -> None:
     _STORAGE_LISTENERS.append(callback)
 
 # domains 表的老库回填只按库跑一次（见 _ensure 里的用法）。
-# 比对 DB_PATH 而不是写死布尔：切换存储目录后指向新库，会自动重跑一次。
-_DOMAINS_BACKFILLED_FOR: str | None = None
+# 记**路径集合**：切到新库会自动跑一次，但切回曾经打开过的库不再重复 O(N) 回填
+# ——在两个目录之间来回切换时，每次白付一遍全表扫正是「切换慢」的一份来源。
+_DOMAINS_BACKFILLED_FOR: set[str] = set()
 
 _SCHEMA_RECORDS = """
 CREATE TABLE IF NOT EXISTS records (
@@ -237,13 +242,13 @@ def _ensure(conn: sqlite3.Connection) -> None:
     # 之后新增记录的写入路径（upsert_record / insert_quick_records / update_domain）
     # 都会同步补自己那条域名，这里的全表回填只服务「domains 表刚建起来的老库」。
     global _DOMAINS_BACKFILLED_FOR
-    if _DOMAINS_BACKFILLED_FOR != str(DB_PATH):
+    if str(DB_PATH) not in _DOMAINS_BACKFILLED_FOR:
         for row in conn.execute("SELECT DISTINCT url FROM records").fetchall():
             domain = _root_domain(row["url"])
             if domain:
                 conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
         # 多线程同时首开也安全：INSERT OR IGNORE 幂等，最多重复跑一次
-        _DOMAINS_BACKFILLED_FOR = str(DB_PATH)
+        _DOMAINS_BACKFILLED_FOR.add(str(DB_PATH))
 
 
 @contextmanager
@@ -281,13 +286,18 @@ def _storage_history(current: str) -> list[str]:
 
 
 def get_storage_paths() -> dict:
-    """当前存储目录及其中的数据库、图片缓存位置，外加用过的历史目录。"""
+    """当前存储目录及其中的数据库、图片缓存位置，外加用过的历史目录。
+
+    `epoch` 随处返回：前端开抓前要把它带上（/api/fetch 的请求级纪元校验），
+    不能只在切库响应里出现——页面加载时也得知道当前是第几纪元。
+    """
     return {
         "path": str(DATA_DIR),
         "db_path": str(DB_PATH),
         "cache_dir": str(DATA_DIR / "cache" / "img"),
         "exists": DATA_DIR.exists(),
         "history": _storage_history(str(DATA_DIR)),
+        "epoch": _STORAGE_EPOCH,
     }
 
 
@@ -355,9 +365,14 @@ def set_storage_dir(new_dir: str) -> dict:
         except sqlite3.DatabaseError as exc:
             raise ValueError(f"目标目录的 metadata.db 不是有效的 SQLite 数据库：{dst_db}") from exc
 
-    DATA_DIR = target
-    DB_PATH = dst_db
-    _STORAGE_EPOCH += 1                      # 从此刻起，旧纪元的抓取结果作废
+    # 目录/纪元的改写与 upsert_record_if_epoch 的「比对+写入」共用 _SWITCH_LOCK：
+    # 保证不会出现「写方比对纪元通过 → 这里切库 → 写方落进新库」的窗口
+    with _SWITCH_LOCK:
+        DATA_DIR = target
+        DB_PATH = dst_db
+        _STORAGE_EPOCH += 1                  # 从此刻起，旧纪元的抓取结果作废
+    # 监听器放在锁**外**跑：fetchpool 的硬杀子进程要 join 几个进程，
+    # 挂在锁里会把并发的写入/效应落地全都堵住（纪元已 +1，语义上已无需持锁）
     for _cb in list(_STORAGE_LISTENERS):
         try:
             _cb()
@@ -377,6 +392,12 @@ def set_storage_dir(new_dir: str) -> dict:
 
 
 # ──────────────────────── Records ────────────────────────
+
+def count_records() -> int:
+    """记录总数。切库响应只需要个数——list_records() 会拉全量行再 JOIN 标签，纯浪费。"""
+    with _db() as conn:
+        return conn.execute("SELECT count(*) FROM records").fetchone()[0]
+
 
 def list_records() -> list[dict]:
     """全部记录，按插入顺序。标签用一次 JOIN 取，避免 N+1。"""
@@ -441,6 +462,20 @@ def upsert_record(new: dict) -> dict:
             conn.execute("INSERT OR IGNORE INTO domains (name) VALUES (?)", (domain,))
         row = conn.execute("SELECT * FROM records WHERE url = ?", (new["url"],)).fetchone()
         return _row_to_record(row, _tags_for(conn, new["url"]))
+
+
+def upsert_record_if_epoch(new: dict, epoch: int) -> dict | None:
+    """带存储纪元的合并写入：纪元一致才写，不一致返回 None（本次结果作废）。
+
+    比对与写入在 `_SWITCH_LOCK` 下一体执行、与 `set_storage_dir` 互斥——
+    杜绝「调用方比对纪元通过 → 切库 → upsert 落进**新库**」的 TOCTOU 窗口。
+    `/api/fetch` 的抓取结果必须走这个入口（直接调 `upsert_record` 的脚本
+    路径没有这层保护，但它们也不经过切库流程）。
+    """
+    with _SWITCH_LOCK:
+        if epoch != _STORAGE_EPOCH:
+            return None
+        return upsert_record(new)
 
 
 def insert_quick_records(items: list[dict]) -> dict:

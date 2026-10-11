@@ -12,6 +12,7 @@ export async function loadRecords() {
       return;
     }
     state.records = data.records || [];
+    if (typeof data.epoch === "number") state.storageEpoch = data.epoch;   // 抓取请求要带的纪元
     render();
     setStatus(`共 ${state.records.length} 条`);
   } catch (e) {

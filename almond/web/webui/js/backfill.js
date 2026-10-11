@@ -5,7 +5,7 @@ import { openDetail } from "./detail.js";
 import { postFetch } from "./fetch.js";
 import { detectProxy } from "./proxy-panel.js";
 import { loadRecords, upsert } from "./records.js";
-import { $, hostOf, rootDomain, setStatus, state } from "./state.js";
+import { $, adoptProxy, hostOf, rootDomain, setStatus, state } from "./state.js";
 
 /* urls=待抓（出队即删）；total/ok/fail 是本轮计数；
    running=worker 在跑；paused=已暂停（暂停位落 localStorage，
@@ -320,6 +320,7 @@ async function runBackfill() {
       backfillState.inflight.add(url);   // 在途：挡住下一次轮询的重复入队
       try {
         const data = await postFetch("/api/fetch", { url, proxy: state.globalProxy });
+        if (data && data.proxy_swapped) adoptProxy(data.proxy_swapped);   // 坏端口被服务端顶替，后续记录跟着走新端口
         if (gen !== backfillState.gen) {
           // 切存储后返回的旧轮结果：不计数、不 upsert、不更新卡片
         } else if (data.stale) {

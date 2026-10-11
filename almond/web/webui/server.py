@@ -7,21 +7,23 @@
 """
 
 import json
+import multiprocessing
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from almond.core import fetch_hints
-from almond.core.fetcher import get_metadata
+from almond.core import fetch_hints, fetchpool
 from almond.core.log import logger
 from almond.core.proxy import detect_proxy
 from almond.core.records import (
-    add_tag_to_record, create_tag, delete_proxy_rule, delete_record, delete_tag,
-    get_domain_fetch_config, get_domain_need_proxy, get_storage_paths, insert_quick_records,
-    list_domains, list_pending_urls, list_proxy_domains, list_proxy_rules, list_records,
-    list_tags,
+    add_tag_to_record, count_records, create_tag, delete_proxy_rule, delete_record,
+    delete_tag, get_domain_fetch_config, get_domain_need_proxy, get_storage_paths,
+    insert_quick_records, list_domains, list_pending_urls, list_proxy_domains,
+    list_proxy_rules, list_records, list_tags,
     match_proxy_rule, remove_storage_history, remove_tag_from_record, replace_domain,
-    set_storage_dir, set_title, storage_epoch, update_domain, upsert_proxy_rule, upsert_record,
+    set_storage_dir, set_title, storage_epoch, update_domain, upsert_proxy_rule,
+    upsert_record_if_epoch,
 )
 from almond.web.webui import fsbrowse, imgproxy
 from almond.web.webui.staticfiles import CONTENT_TYPES, resolve_static
@@ -96,7 +98,9 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path == "/api/records":
-            self._send_json({"records": list_records()})
+            # epoch 一并返回：前端开抓前把它带上（/api/fetch 的请求级纪元校验），
+            # 页面加载与切库后的 loadRecords 都会顺带刷新
+            self._send_json({"records": list_records(), "epoch": storage_epoch()})
             return
         if path == "/api/records/pending":
             # 自动补抓的轮询源：页面开着时，别处（另一标签页/插件/导入）新进库的
@@ -121,8 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"domains": list_proxy_domains()})
             return
         if path == "/api/proxy-detect":
-            # 每次都重新探测（并行，约 0.25s），不缓存：代理可能刚启动
-            self._send_json({"ok": True, "proxy": detect_proxy()})
+            # 每次都重新探测：TCP 探开 + **真实转发验证**（并行，坏端口不会被填回去）
+            self._send_json({"ok": True, "proxy": fetch_hints.detect_working_proxy()})
             return
         if path in ("/api/storage-dir", "/api/db-path"):  # db-path 为旧路径兼容
             self._send_json(get_storage_paths())
@@ -181,25 +185,81 @@ class Handler(BaseHTTPRequestHandler):
             if not url.startswith(("http://", "https://")):
                 self._send_json({"ok": False, "error": "网址必须以 http:// 或 https:// 开头"}, 400)
                 return
+
+            # ① 请求级纪元（先于一切网络动作捕获）：客户端在请求体带上它开抓时的
+            #    存储纪元。切库**之后**才到达 / 才被线程调度执行的旧轮请求——
+            #    abort() 只断浏览器连接，服务端可能早已收到完整请求体——在这里
+            #    直接作废、一个包都不发。没有这层时，这类请求的 start_epoch 读到的
+            #    已经是新纪元，会把旧目录的 URL 抓完写进新库（污染 B 库）。
+            start_epoch = storage_epoch()
+            req_epoch = data.get("epoch")
+            if isinstance(req_epoch, int) and req_epoch != start_epoch:
+                logger.info(
+                    f"丢弃旧存储纪元的抓取请求（epoch {req_epoch} ≠ 当前 {start_epoch}）："
+                    f"{urlparse(url).hostname}"
+                )
+                self._send_json({
+                    "ok": True, "stale": True, "success": False,
+                    "error": "存储已切换，旧目录的抓取请求已丢弃",
+                })
+                return
+
             proxy = effective_proxy(url, global_proxy)
             # 域名级抓取规则：详情选择器 + 封面开关。
             # 代理不用这里的 need_proxy——effective_proxy 已经按
             # 「URL 模式规则 > 域名规则 > 全局」算好了，再覆盖会打乱优先级
             rules = get_domain_fetch_config(url)
-            start_epoch = storage_epoch()   # 抓取期间切了库 → 结果作废，绝不写进新库
-            meta = get_metadata(url, proxy=proxy,
-                                selector=rules["detail_selector"] or None,
-                                cover=rules["cover"])
+            # 代理健康顶替：配置的端口转发不通 → 本机区间找可用端口换上，
+            # 并通过 proxy_swapped 回传给前端（前端跟上地址，不再反复撞坏端口）。
+            # 顶替动作的日志由 ensure_working_proxy 统一打
+            if proxy:
+                proxy = fetch_hints.ensure_working_proxy(proxy)
+            # 抓取本体跑在**子进程**（fetchpool）：切库时 cancel_all 硬杀进程树
+            # ——正在跑的引擎调用当场中断，不用等它超时；Web 进程也不再有抓取的
+            # GIL/锁争用。子进程带回的缓存写入（效应）经纪元校验后才落地。
+            job = fetchpool.submit(url=url, proxy=proxy,
+                                   selector=rules["detail_selector"] or None,
+                                   cover=rules["cover"])
+            try:
+                got = fetchpool.wait(job)
+            except TimeoutError:
+                self._send_json({"ok": False, "error": "抓取子进程无响应（已放弃本次抓取）"}, 500)
+                return
+            if got is None:
+                # 子进程被硬停（切库）→ 本次抓取作废
+                self._send_json({
+                    "ok": True, "stale": True, "success": False,
+                    "error": "存储已切换，抓取子进程已硬停，结果作废",
+                })
+                return
+            meta, effects = got
             if storage_epoch() != start_epoch:
                 self._send_json({
                     "ok": True, "stale": True, "success": False,
                     "error": "存储已切换，本次抓取结果已丢弃",
                 })
                 return
-            merged = upsert_record(meta)
+            fetch_hints.apply_effects(effects, epoch=start_epoch)   # 学习落地（纪元已复核）
+            if meta is None:
+                # 子进程内部异常（不是切库）：如实报失败，不做写入
+                self._send_json({"ok": False, "error": "抓取子进程异常，未取得结果"})
+                return
+            # 原子写入：比对纪元 + 写库一体执行（与切库互斥），堵住
+            # 「守卫比对通过 → 切库发生 → 写进新库」的最后一段窗口
+            merged = upsert_record_if_epoch(meta, start_epoch)
+            if merged is None:
+                self._send_json({
+                    "ok": True, "stale": True, "success": False,
+                    "error": "存储已切换，本次抓取结果已丢弃",
+                })
+                return
+            fetch_hints.apply_effects(effects, epoch=start_epoch)
             # success 说的是**本次抓取**：record.success 是合并后的值，失败时按合并规则
             # 保留快照/旧内容（可能仍是 1），拿它计数会把失败全算成成功
-            self._send_json({"ok": True, "record": merged, "success": bool(meta.get("success"))})
+            payload = {"ok": True, "record": merged, "success": bool(meta.get("success"))}
+            if proxy and proxy != global_proxy:
+                payload["proxy_swapped"] = proxy
+            self._send_json(payload)
             return
 
         if path == "/api/tag":
@@ -241,19 +301,28 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/proxy-detect":
-            self._send_json({"ok": True, "proxy": detect_proxy()})
+            self._send_json({"ok": True, "proxy": fetch_hints.detect_working_proxy()})
             return
 
         if path in ("/api/storage-dir", "/api/db-path"):
             # 切换存储目录：**不迁移**——旧数据留在原地，新目录从零开始；
             # 纪元 +1 作废在途抓取，fetch_hints 同步丢弃内存缓存
             new_dir = (data.get("path") or "").strip()
+            t0 = time.monotonic()
             try:
                 result = set_storage_dir(new_dir)
             except (ValueError, OSError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
                 return
-            self._send_json({"ok": True, **result, "records": len(list_records())})
+            t1 = time.monotonic()
+            n = count_records()
+            # 分段计时：切换慢时先看是 set（配置/目标库校验）还是 count（新库首开
+            # 的 domains 回填在 _ensure 里）在耗时，不用猜
+            logger.info(
+                f"存储目录已切换 → {result['path']}（set {int((t1 - t0) * 1000)}ms，"
+                f"count {int((time.monotonic() - t1) * 1000)}ms，{n} 条）"
+            )
+            self._send_json({"ok": True, **result, "records": n})
             return
 
         if path == "/api/domain/replace":
@@ -367,6 +436,9 @@ def _opt(name: str, default: str) -> str:
 
 
 def main() -> None:
+    # spawn 拉起抓取子进程时会重入本模块：freeze_support 让子进程在此短路退出，
+    # 不会把 Web 服务再启动一遍（console 入口没有 __main__ 保护时尤其需要）
+    multiprocessing.freeze_support()
     host = _opt("--host", "0.0.0.0")
     port = int(_opt("--port", "4000"))
     server = ThreadingHTTPServer((host, port), Handler)

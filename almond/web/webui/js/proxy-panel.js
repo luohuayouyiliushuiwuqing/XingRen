@@ -104,8 +104,11 @@ export async function saveDomain() {
 
 export async function openProxyPanel() {
   $("globalProxyInput").value = state.globalProxy;
-  await renderProxyPanel();
+  /* 先开面板、后填内容：旧版 await renderProxyPanel()（两个 GET）之后才
+     unmask——抓取占着连接池/服务端忙时，面板「打不开」、代理也改不了。
+     现在打开是纯本地动作（同步显示），列表随后异步填充；保存按钮立刻可用。 */
   $("proxyMask").hidden = false;
+  renderProxyPanel();
 }
 
 async function renderProxyPanel() {
@@ -255,10 +258,16 @@ export async function addDomainRule() {
 export async function saveGlobalProxy() {
   const val = $("globalProxyInput").value.trim();
   state.globalProxy = val;
-  /* 手填过的地址要按住：补抓开跑前会重新探测本机代理端口，
-     没有这个标记的话，用户显式填的地址会被探测结果悄悄覆盖掉 */
-  state.proxyManual = !!val;
-  setStatus(val ? `全局代理已设为 ${val}` : "已清除全局代理");
+  /* 用户点过「保存」就是明确意志——**清空也算**（= 本局不用代理走直连）。
+     旧逻辑 `proxyManual = !!val` 让清空后的标记复位成 false，补抓下一轮开跑时
+     的自动探测（detectProxy fill）又把地址填回来：运行中怎么改/怎么清都弹回去，
+     「没办法修改代理」的根子就在这。检测按钮仍会复位它（那也是用户明确动作）。 */
+  state.proxyManual = true;
+  setStatus(
+    val
+      ? `全局代理已设为 ${val}（自下一条抓取起生效）`
+      : "已清除全局代理，改走直连（自动探测不再覆盖，自下一条抓取起生效）"
+  );
 }
 
 /* 自动探测本地代理端口（7889-7899）；detectOnly 时只返回不写状态 */

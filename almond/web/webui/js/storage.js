@@ -2,6 +2,7 @@
    切换语义（用户定的）：**不迁移，新目录从零开始**——旧数据留在原地；
    切换瞬间：中止在途抓取（服务端存储纪元兜底丢弃结果）、清空补抓队列与
    选择/搜索/筛选/子页等界面状态，然后全量加载新目录并重启补抓扫描。 */
+import { render } from "./board.js";
 import { resetBackfill, startBackfill } from "./backfill.js";
 import { closeDetail } from "./detail.js";
 import { abortAllFetches } from "./fetch.js";
@@ -63,6 +64,9 @@ function renderHistory(history) {
 export async function openDbPanel() {
   $("dbMask").hidden = false;
   $("fsPicker").hidden = true;
+  /* 路径输入框在**发起 GET 之前**就清空：放在 await 之后的话，GET 返回时会把
+     用户这几毫秒里刚填/刚粘贴的路径冲掉（保存按钮于是报「请先选择或输入」） */
+  $("dbPathInput").value = "";
   $("dbCurrent").textContent = "加载中…";
   try {
     const d = await (await fetch("/api/storage-dir")).json();
@@ -82,7 +86,6 @@ export async function openDbPanel() {
   } catch (e) {
     $("dbCurrent").textContent = "读取失败：" + e.message;
   }
-  $("dbPathInput").value = "";
 }
 
 export async function loadFs(path) {
@@ -119,6 +122,18 @@ export async function loadFs(path) {
   }
 }
 
+/* 切换失败后的恢复：服务端仍是旧目录（POST 失败 = 什么都没切），
+   把刚清掉的界面按旧目录加载回来、重启补抓轮。
+   abort/reset 已经发生过：被中止的在途抓取服务端多半已写回旧库，loadRecords
+   能拿回来；没写回的仍是 fetched=0，重新扫描会再入队——一轮不会丢任务。 */
+async function recoverSwitch(reason) {
+  try {
+    await loadRecords();
+    startBackfill("切换失败，已恢复原目录");
+  } catch (e) { /* loadRecords 自己会报状态栏 */ }
+  setStatus(`切换失败：${reason}（已恢复原目录）`, "err");
+}
+
 export async function saveDbPath() {
   const path = $("dbPathInput").value.trim();
   if (!path) {
@@ -126,31 +141,21 @@ export async function saveDbPath() {
     return;
   }
   $("dbSave").disabled = true;
-  setStatus("正在切换存储目录（新目录从零开始，旧任务将立即中止）…", "busy");
+  const t0 = Date.now();
   try {
-    // 先切库（服务端纪元 +1，之后返回的旧抓取结果一律作废），失败则什么都没动
-    const resp = await fetch("/api/storage-dir", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
-    const data = await resp.json();
-    if (!data.ok) {
-      setStatus("切换失败：" + data.error, "err");
-      return;
-    }
-    // ① 断掉在途抓取 ② 清空补抓队列/轮询/计数（代际 +1，旧 worker 收口不再碰状态）
+    /* ① 先断后路，再发切换请求（**顺序与旧版相反**）：
+       在途的 POST /api/fetch 占着浏览器同源连接池——HTTP/1.1 每源上限 6 条，
+       5 个补抓 worker 加慢图/手动抓取能把槽位占满，单条还一跑几十秒。
+       旧顺序「先 POST、成功后再中止」会让切换请求排队等空闲槽——实测能等到
+       一分多钟。先中止：连接立刻归还、队列代际作废；服务端的纪元兜底不受影响，
+       切换 POST 本身失败时走 recoverSwitch 恢复原样（服务端那时什么都没动）。 */
+    setStatus("正在切换存储目录：中止旧任务…", "busy");
     abortAllFetches();
     resetBackfill();
 
-    fsState.storage = data.path;
-    $("dbCurrent").textContent =
-      `目录: ${data.path}\n数据库: ${data.db_path}\n图片缓存: ${data.cache_dir}`;
-    renderHistory(data.history || []);   // 新目录已进历史，列表跟着刷新
-    $("dbPathInput").value = "";
-    $("fsPicker").hidden = true;
-
-    // ③ 界面状态归零：旧数据的多选/搜索/筛选/子页/弹层全部退场
+    /* ② 旧画面立刻清掉：点击即见变化；旧缩略图的 /api/img 随 DOM 一起被浏览器
+       取消，连接池进一步腾出。失败恢复由 recoverSwitch 负责，所以可以先清 */
+    state.records = [];
     state.selectedUrls.clear();
     state.filter = "";
     $("searchInput").value = "";
@@ -161,24 +166,52 @@ export async function saveDbPath() {
     state.tagTargets = null;
     state.domainTarget = null;
     closeDetail();
-    leaveDomainPage();          // 退出域名子页（内部 render 一次，马上被 loadRecords 覆盖）
+    leaveDomainPage();          // 退出域名子页（在子页里时内部 render 一次）
     state.domainConfig = new Map();    // 旧域名配置绝不带进新目录
     state.proxyDomains = new Set();
+    render();                   // 空看板立刻上屏（不在子页时 leaveDomainPage 不渲染）
 
-    // ④ 全量加载新目录 + 重启补抓扫描/轮询
-    await loadRecords();
-    await loadDomainConfig();
-    await loadProxyDomains();
+    /* ③ 切库（服务端纪元 +1，旧纪元的抓取结果从此作废） */
+    setStatus("正在切换存储目录：提交新目录…", "busy");
+    let data;
+    try {
+      const resp = await fetch("/api/storage-dir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      data = await resp.json();
+    } catch (e) {
+      await recoverSwitch(e.message);
+      return;
+    }
+    if (!data.ok) {
+      await recoverSwitch(data.error || "未知错误");
+      return;
+    }
+
+    fsState.storage = data.path;
+    if (typeof data.epoch === "number") state.storageEpoch = data.epoch;   // 新纪元立即生效
+    $("dbCurrent").textContent =
+      `目录: ${data.path}\n数据库: ${data.db_path}\n图片缓存: ${data.cache_dir}`;
+    renderHistory(data.history || []);   // 新目录已进历史，列表跟着刷新
+    $("dbPathInput").value = "";
+    $("fsPicker").hidden = true;
+
+    // ④ 并行加载新目录 + 重启补抓扫描/轮询（三个接口互不依赖，串行要白等三趟往返）
+    setStatus("正在切换存储目录：载入新目录…", "busy");
+    await Promise.all([loadRecords(), loadDomainConfig(), loadProxyDomains()]);
     startBackfill("存储已切换，扫描新目录");
     setStatus(
       `存储目录已切换到 ${data.path}` +
         (data.db_used_existing
           ? "（使用该目录现有数据库）"
           : "（新目录，从零开始）") +
-        `；旧任务已中止、状态已重置 · 共 ${data.records} 条`
+        `；旧任务已中止、状态已重置 · 共 ${data.records} 条` +
+        ` · 耗时 ${Date.now() - t0}ms`
     );
-  } catch (e) {
-    setStatus("切换失败：" + e.message, "err");
+    // 卡在哪一步看状态栏的阶段文案（中止旧任务/提交新目录/载入新目录）即可分辨；
+    // 服务端另有 set_storage_dir / count 分段日志（server.py）
   } finally {
     $("dbSave").disabled = false;
   }

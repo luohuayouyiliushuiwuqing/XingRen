@@ -2,7 +2,7 @@
 import { updateCard } from "./cards.js";
 import { openDetail } from "./detail.js";
 import { upsert } from "./records.js";
-import { $, setStatus, state } from "./state.js";
+import { $, adoptProxy, setStatus, state } from "./state.js";
 
 /* ---------- 在途请求管理（切存储时全部中止；服务端存储纪元作最终兜底） ---------- */
 
@@ -14,15 +14,20 @@ export function abortAllFetches() {
   controllers.clear();
 }
 
-/** 统一 POST：注册 AbortController，返回解析后的 JSON。 */
+/** 统一 POST：注册 AbortController，返回解析后的 JSON。
+    请求体自动带上当前存储纪元（`state.storageEpoch`）：切库后才被服务端执行的
+    旧轮请求会在入口被丢弃（stale），不会把旧目录的抓取结果写进新库。 */
 export async function postFetch(path, body) {
   const ctrl = new AbortController();
   controllers.add(ctrl);
+  const payload = state.storageEpoch != null && body && typeof body === "object"
+    ? { ...body, epoch: state.storageEpoch }
+    : body;
   try {
     const resp = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
     return await resp.json();
@@ -39,6 +44,7 @@ export async function fetchRecord(url) {
   setStatus(`正在抓取 ${url} …（三级降级，可能需要数秒到一两分钟）`, "busy");
   try {
     const data = await postFetch("/api/fetch", { url, proxy });
+    if (data.proxy_swapped) adoptProxy(data.proxy_swapped);   // 坏端口被服务端顶替
     if (data.stale) {
       // 抓取期间切换了存储：服务端已丢弃结果，本机也绝不入库
       setStatus("存储已切换，本次抓取结果已丢弃");

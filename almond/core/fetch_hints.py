@@ -23,12 +23,16 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import ProxyHandler, build_opener
 
 from almond.core import records
+from almond.core.log import logger
+from almond.core.proxy import scan_open_ports
 
 HINTS_FILENAME = "fetch_hints.json"
 
@@ -54,6 +58,7 @@ _NETWORK_MARKERS = (
 )
 
 _LOCK = threading.RLock()
+_PROBE_LOCK = threading.Lock()                              # 只串行化网络探测本身
 _DATA: dict | None = None                                   # {"hosts": {域名: 经验行}}
 _HEALTH: dict[str, tuple[bool, float]] = {}                 # 代理地址 → (是否可用, 探测时刻)
 
@@ -63,7 +68,14 @@ _FETCH_EPOCH = threading.local()
 
 
 def enter_fetch() -> int:
-    """fetch_page 入口调用：绑定本次抓取所属的存储纪元。"""
+    """fetch_page 入口调用：绑定本次抓取所属的存储纪元。
+
+    同时丢弃内存缓存——抓取子进程是常驻的，别的进程（主进程/兄弟子进程）
+    写过的新策略/Cookie 必须在下一次抓取时读到盘上的最新版本。
+    """
+    global _DATA
+    with _LOCK:
+        _DATA = None
     epoch = records.storage_epoch()
     _FETCH_EPOCH.epoch = epoch
     return epoch
@@ -73,6 +85,81 @@ def _write_allowed() -> bool:
     """未绑定纪元（脚本直接调 record_* 等）或纪元仍一致 → 允许写。"""
     epoch = getattr(_FETCH_EPOCH, "epoch", None)
     return epoch is None or epoch == records.storage_epoch()
+
+
+# ---------------------------------------------------------------- 效应收集（子进程模式）
+# 抓取跑在独立子进程里（almond.core.fetchpool）——子进程**不直接写本文件**：
+# 跨进程没有这把 RLock，各写各的会互相覆盖。子进程把每次要做的写入登记成
+# 「效应」带回来，主进程在存储纪元校验通过后统一落地（apply_effects）。
+
+_EFFECTS: list | None = None          # 非 None = 当前处于效应收集模式
+
+
+def enable_effects() -> None:
+    """子进程抓取入口调用：此后本进程内的所有缓存写入改为收集效应、不落盘。"""
+    global _EFFECTS
+    _EFFECTS = []
+
+
+def take_effects() -> list:
+    """取走本轮收集的效应并退出收集模式（一对一，异常也不会串进下一次）。"""
+    global _EFFECTS
+    out = _EFFECTS or []
+    _EFFECTS = None
+    return out
+
+
+def _record_effect(kind: str, payload: dict) -> bool:
+    """收集模式下登记一条效应并短路真正的写入；非收集模式返回 False（照常写）。"""
+    if _EFFECTS is None:
+        return False
+    _EFFECTS.append((kind, payload))
+    return True
+
+
+def apply_effects(effects, epoch: int | None = None) -> int:
+    """主进程落地子进程带回的效应；返回实际应用条数。
+
+    与 `set_storage_dir` 互斥（_SWITCH_LOCK）：`epoch` 与当前纪元不一致
+    （抓取期间切了库）→ 整批作废，旧项目的学习绝不写进新目录的缓存。
+    """
+    if not effects:
+        return 0
+    with records._SWITCH_LOCK:
+        if epoch is not None and epoch != records.storage_epoch():
+            return 0
+        n = 0
+        for kind, p in effects:
+            try:
+                if kind == "touch":
+                    _touch(p["url"], p["key"], p["value"])
+                elif kind == "save_strategy":
+                    save_strategy(p["url"], p["strategy_id"], p.get("ms"))
+                elif kind == "drop_strategy":
+                    drop_strategy(p["url"], p.get("strategy_id"))
+                elif kind == "drop_cookie":
+                    drop_cookie(p["url"])
+                elif kind == "touch_cookie":
+                    touch_cookie(p["url"], p.get("ms"), new_cookies=p.get("cookies") or {})
+                elif kind == "store_cookie":
+                    _store_cookie(p["url"], p.get("cookies") or {})
+                else:
+                    continue
+                n += 1
+            except Exception:  # noqa: BLE001 —— 单条效应坏了不拖垮整批
+                continue
+        return n
+
+
+def fetch_stale() -> bool:
+    """本次抓取期间切换了存储目录 → 调用方应中止剩余抓取工作。
+
+    `_write_allowed()` 只挡**写入**（旧经验不落进新目录），挡不住已经跑起来的
+    三级引擎——不主动检查的话，切库后后台还会继续烧浏览器/超时跑完整条链。
+    未绑定纪元（脚本直调）返回 False。
+    """
+    epoch = getattr(_FETCH_EPOCH, "epoch", None)
+    return epoch is not None and epoch != records.storage_epoch()
 
 
 def path() -> Path:
@@ -121,6 +208,8 @@ def _domain(url: str) -> str:
 def _touch(url: str, key: str, value: bool) -> None:
     """记一条经验；值没变化就不落盘（并发高频调用下避免写放大）。"""
     if not _write_allowed():
+        return
+    if _record_effect("touch", {"url": url, "key": key, "value": value}):
         return
     domain = _domain(url)
     with _LOCK:
@@ -193,18 +282,99 @@ def _probe(proxy: str, timeout: float) -> bool:
 
 
 def proxy_reachable(proxy: str, timeout: float = _PROXY_PROBE_TIMEOUT) -> bool:
-    """代理转发是否可用（带 TTL 缓存：通过 30s / 失败 15s，探测在锁内只发一次）。
+    """代理转发是否可用（带 TTL 缓存：通过 30s / 失败 15s）。
 
     区别于端口探测：端口在 ≠ 能连到远程。这里识别「端口开着但代理坏/上游挂」。
+    **探测绝不持有 `_LOCK`**——原来 probe 跑在锁内，一次最多 5 秒，期间所有
+    经验读写（含代理面板的 GET /api/domains → all_hints）全部排队，抓取线程
+    就这样把面板卡住了。现在只用独立的 `_PROBE_LOCK` 串行化探测本身。
     """
     now = time.time()
     with _LOCK:
         hit = _HEALTH.get(proxy)
         if hit is not None and now - hit[1] < (_PROXY_TTL_OK if hit[0] else _PROXY_TTL_FAIL):
             return hit[0]
-        ok = _probe(proxy, timeout)
-        _HEALTH[proxy] = (ok, time.time())
-        return ok
+    with _PROBE_LOCK:
+        with _LOCK:                       # 双检：等锁期间可能已被别人探好
+            hit = _HEALTH.get(proxy)
+            if hit is not None and now - hit[1] < (_PROXY_TTL_OK if hit[0] else _PROXY_TTL_FAIL):
+                return hit[0]
+        ok = _probe(proxy, timeout)       # ← 网络 I/O：锁外进行
+        with _LOCK:
+            _HEALTH[proxy] = (ok, time.time())
+    return ok
+
+
+# ---------------------------------------------------------------- 代理端口顶替
+
+_DETECT_TIMEOUT = 2.0     # 端口逐个验证转发的单端口超时（端口间并行，总耗时≈单端口）
+_ENSURE_TTL = 20           # 「坏端口 → 顶替结论」缓存：一条补抓轮里只做一次完整探测
+_ENSURE: dict | None = None    # {"in": 输入地址, "out": 顶替结果, "at": 时刻}
+
+
+def detect_working_proxy(host: str = "127.0.0.1") -> str | None:
+    """在 7889-7899 里找一个**转发真正可用**的本机代理端口（编号最小者）。
+
+    两步：① TCP 并行探开（`scan_open_ports`，约 0.25s）；② 对开着的端口**并行**做
+    真实转发验证（走 HTTPS CONNECT 的小请求）。只做 ① 的话，端口开着但上游挂了的
+    坏端口会被当成可用填回去——正是「代理不好使还一直用旧端口」的来源。
+    验证结论顺手写进 `_HEALTH` 缓存，后续 `proxy_reachable` 直接命中。
+    """
+    ports = scan_open_ports(host)
+    if not ports:
+        return None
+    urls = [f"http://{host}:{p}" for p in ports]
+    # 直接并行 _probe（proxy_reachable 的探测在锁内，池化会串行化），结果回填缓存
+    with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+        oks = list(pool.map(lambda u: _probe(u, _DETECT_TIMEOUT), urls))
+    now = time.time()
+    with _LOCK:
+        for u, ok in zip(urls, oks):
+            _HEALTH[u] = (ok, now)
+    for p, ok in zip(ports, oks):
+        if ok:
+            if p != ports[0]:
+                logger.debug(f"端口 {ports[0]} 等转发不通，跳过，选用 {host}:{p}")
+            return f"http://{host}:{p}"
+    return None
+
+
+def _is_loopback(proxy: str) -> bool:
+    try:
+        return urlparse(proxy).hostname in ("127.0.0.1", "localhost", "::1")
+    except ValueError:
+        return False
+
+
+def ensure_working_proxy(proxy: str | None) -> str | None:
+    """代理转发不通时，尝试在本机 7889-7899 找一个**转发可用**的新端口顶替。
+
+    - 传 None / 空 → 原样返回（没配代理不归这里管）；
+    - 当前地址健康 → 原样返回（健康结论走 proxy_reachable 的 30s/15s 缓存）；
+    - 当前地址是**本机回环**且转发不通 → 顶替成探测到的可用端口（找不到就保持原地址，
+      由 fetch_page 照旧降级直连）；远程地址不做本地端口猜测；
+    - 结论缓存 `_ENSURE_TTL` 秒：一轮补抓里不会每条记录都重跑完整探测。
+    """
+    global _ENSURE
+    if not proxy:
+        return proxy
+    now = time.time()
+    with _LOCK:
+        cached = _ENSURE
+        if cached and cached["in"] == proxy and now - cached["at"] < _ENSURE_TTL:
+            return cached["out"]
+    if proxy_reachable(proxy):
+        out = proxy
+    elif not _is_loopback(proxy):
+        out = proxy                      # 远程代理：本机端口区间与它无关，不瞎换
+    else:
+        alt = detect_working_proxy()
+        out = alt if (alt and alt != proxy) else proxy
+        if out != proxy:
+            logger.info(f"代理 {proxy} 转发不通，已自动顶替为可用端口 {out}")
+    with _LOCK:
+        _ENSURE = {"in": proxy, "out": out, "at": time.time()}
+    return out
 
 
 # ---------------------------------------------------------------- 跳过判定
@@ -273,6 +443,8 @@ def save_strategy(url: str, strategy_id: str, ms: int | None = None) -> None:
     """
     if not _write_allowed():
         return
+    if _record_effect("save_strategy", {"url": url, "strategy_id": strategy_id, "ms": ms}):
+        return
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].setdefault(domain, {})
@@ -328,6 +500,8 @@ def drop_strategy(url: str, strategy_id: str | None = None) -> None:
     成绩册清空则整个移除，等下一轮被拦时重新定制。
     """
     if not _write_allowed():
+        return
+    if _record_effect("drop_strategy", {"url": url, "strategy_id": strategy_id}):
         return
     domain = _domain(url)
     with _LOCK:
@@ -419,10 +593,17 @@ def get_cookie(url: str) -> dict | None:
     return None
 
 
-def touch_cookie(url: str, ms: int | None = None, response=None) -> None:
+def touch_cookie(url: str, ms: int | None = None, response=None, *, new_cookies: dict | None = None) -> None:
     """Cookie 直取成功：刷新 last_success、记耗时（best_ms 取最小）；
-    响应里若带了新的 Set-Cookie（会话轮换），合并进已存的值里。"""
+    响应里若带了新的 Set-Cookie（会话轮换），合并进已存的值里。
+
+    `new_cookies`：效应重放入口——子进程把响应里的 Cookie 解析成 dict 带回
+    （scrapling Response 不可序列化），主进程落地时用它代替 response。
+    """
     if not _write_allowed():
+        return
+    new = dict(new_cookies) if new_cookies is not None else _resp_cookies(response)
+    if _record_effect("touch_cookie", {"url": url, "ms": ms, "cookies": new}):
         return
     domain = _domain(url)
     with _LOCK:
@@ -435,7 +616,6 @@ def touch_cookie(url: str, ms: int | None = None, response=None) -> None:
             ck["last_ms"] = ms
             if ck.get("best_ms") is None or ms < ck["best_ms"]:
                 ck["best_ms"] = ms
-        new = _resp_cookies(response)
         if new:
             merged = parse_cookie_header(ck.get("value", ""))
             merged.update(new)
@@ -449,6 +629,8 @@ def drop_cookie(url: str) -> None:
     """Cookie 失效（HTTP ≥400）→ 弃用，并记 `cookie_failed_at` 进入 7 天防抖期
     （期间自动回传被禁止；人工 set_cookie 或防抖到期后恢复）。"""
     if not _write_allowed():
+        return
+    if _record_effect("drop_cookie", {"url": url}):
         return
     domain = _domain(url)
     with _LOCK:
@@ -485,11 +667,19 @@ def store_cookie_from_response(url: str, response) -> bool:
     自动回传被禁止——否则「静态成功存入 → 下次带 Cookie 403 → 弃用 → 又存入」会循环
     白跑。人工 set_cookie 不受此限。
     """
-    if not _write_allowed():
-        return False
     new = _resp_cookies(response)
     if not new:
         return False
+    return _store_cookie(url, new)
+
+
+def _store_cookie(url: str, new: dict) -> bool:
+    """把一组已解析的 Set-Cookie 合并进缓存（`store_cookie_from_response` 的本体，
+    也是效应重放的落地入口——子进程带回的只能是 dict，不是 Response）。"""
+    if not _write_allowed():
+        return False
+    if _record_effect("store_cookie", {"url": url, "cookies": new}):
+        return True
     domain = _domain(url)
     with _LOCK:
         row = _load()["hosts"].setdefault(domain, {})
