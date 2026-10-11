@@ -233,16 +233,27 @@ def hint(url: str) -> dict:
 
 
 def all_hints() -> dict:
-    """全部经验行（域名 → {direct, proxy, updated}），供 /api/domains 附带给前端展示。"""
+    """全部经验行，供 /api/domains 附带给前端展示（系统实测面板的数据源）。
+
+    每行：`direct`/`proxy`/`updated`（可达性结论）+ **`strategy`**（当前活跃方案 id）+
+    **`plan`**（有没有可用抓取方案 = 活跃策略 **或** 已存 Cookie——Cookie 直取也算方案；
+    只暴露布尔，Cookie 值本身依旧不进 API）+ **`confirm`**（方案确认阶段的结论
+    `{ok, at, reason}`，null = 未确认过）。前端 `autoFetchEligible` 按 `plan` 放行
+    自动抓取：先确认、后抓取。
+    """
     with _LOCK:
-        return {
-            domain: {
+        out = {}
+        for domain, row in _load()["hosts"].items():
+            sid = (row.get("strategy") or {}).get("id")
+            out[domain] = {
                 "direct": row.get("direct"),
                 "proxy": row.get("proxy"),
                 "updated": row.get("updated", ""),
+                "strategy": sid,
+                "plan": bool(sid) or bool((row.get("cookie") or {}).get("value")),
+                "confirm": row.get("confirm"),
             }
-            for domain, row in _load()["hosts"].items()
-        }
+        return out
 
 
 def record_direct_success(url: str) -> None:
@@ -696,6 +707,47 @@ def _store_cookie(url: str, new: dict) -> bool:
         row["updated"] = now
         _save()
     return True
+
+
+# ---------------------------------------------------------------- 方案确认（confirm 阶段）
+
+def domain_plan(url: str) -> bool:
+    """该域名当前**有没有可用抓取方案**：活跃策略 或 已存 Cookie（Cookie 直取也算方案）。
+
+    入参既可以是完整 URL 也可以是裸域名（`_domain()` 对裸名原样返回）。
+    这是自动抓取的放行判据——`plan=True` 才允许自动抓这一组（先确认、后抓取）。
+    """
+    with _LOCK:
+        row = _load()["hosts"].get(_domain(url), {})
+        return bool((row.get("strategy") or {}).get("id")) or bool(
+            (row.get("cookie") or {}).get("value")
+        )
+
+
+def confirm_domain(url: str, ok: bool, reason: str = "") -> None:
+    """写入该域名的方案确认结论（confirm 阶段专用，主进程直接落盘）。
+
+    结论**持久且一次性**：`ok=False`（多路尝试均不通）→ 自动抓取整组跳过、
+    之后不再重测；`ok=True` 后若方案又失效（策略被弃用、Cookie 被清），
+    `domain_plan()` 变 False 而 confirm 仍在 → 同样跳过、不再重试（用户语义：
+    确认过但当前没有方案，就不要再尝试了）。
+    """
+    if not _write_allowed():
+        return
+    domain = _domain(url)
+    now = datetime.now().strftime(_TS_FMT)
+    with _LOCK:
+        row = _load()["hosts"].setdefault(domain, {})
+        row["confirm"] = {"ok": bool(ok), "at": now, "reason": reason or ""}
+        row["updated"] = now
+        _save()
+
+
+def get_confirm(url: str) -> dict | None:
+    """该域名的确认结论 {ok, at, reason}；从未确认过返回 None。"""
+    with _LOCK:
+        c = _load()["hosts"].get(_domain(url), {}).get("confirm")
+        return dict(c) if isinstance(c, dict) else None
 
 
 def _on_storage_changed() -> None:

@@ -760,6 +760,7 @@ main {
 .test-badge.proxy { background: var(--accent-weak); color: var(--accent); }
 .test-badge.warn { background: #fff5e6; color: #d97706; }
 .test-badge.none { background: var(--bg); color: var(--faint); font-weight: 500; }
+.test-badge.bad { background: #fdecec; color: #dc2626; }   /* 无方案 / 方案失效：自动抓取整组跳过 */
 
 /* ---------- 详情弹层 ---------- */
 .detail-modal { width: min(640px, calc(100vw - 48px)); max-height: 82vh; overflow: auto; }

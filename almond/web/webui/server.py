@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from almond.core import fetch_hints, fetchpool
+from almond.core import confirm, fetch_hints, fetchpool
 from almond.core.log import logger
 from almond.core.proxy import detect_proxy
 from almond.core.records import (
@@ -302,6 +302,32 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/proxy-detect":
             self._send_json({"ok": True, "proxy": fetch_hints.detect_working_proxy()})
+            return
+
+        if path == "/api/confirm":
+            # 方案确认阶段（自动抓取的最前面）：没有可用方案的域名，各挑一条真实
+            # 网址跑一次测试抓取，成功学出方案、失败写持久结论——前端据此整组放行/跳过
+            domains = data.get("domains")
+            if domains is not None and not isinstance(domains, list):
+                self._send_json({"ok": False, "error": "domains 必须是数组"}, 400)
+                return
+            start_epoch = storage_epoch()
+            req_epoch = data.get("epoch")
+            if isinstance(req_epoch, int) and req_epoch != start_epoch:
+                self._send_json({"ok": True, "stale": True,
+                                 "error": "存储已切换，方案确认作废"})
+                return
+            gp = (data.get("proxy") or "").strip()
+            report = confirm.confirm_domains(
+                domains=domains,
+                proxy_for=lambda u: effective_proxy(u, gp),
+                start_epoch=start_epoch,
+            )
+            if report.get("aborted") or storage_epoch() != start_epoch:
+                self._send_json({"ok": True, "stale": True,
+                                 "error": "存储已切换，方案确认作废"})
+                return
+            self._send_json({"ok": True, "epoch": storage_epoch(), **report})
             return
 
         if path in ("/api/storage-dir", "/api/db-path"):

@@ -4,7 +4,7 @@ import { updateCard } from "./cards.js";
 import { openDetail } from "./detail.js";
 import { postFetch } from "./fetch.js";
 import { detectProxy } from "./proxy-panel.js";
-import { loadRecords, upsert } from "./records.js";
+import { loadDomainConfig, loadRecords, upsert } from "./records.js";
 import { $, adoptProxy, hostOf, rootDomain, setStatus, state } from "./state.js";
 
 /* urls=待抓（出队即删）；total/ok/fail 是本轮计数；
@@ -50,10 +50,80 @@ function savePaused(on) {
    「关」的域名照样被抓。只有**明确为 false** 才排除；null（跟随全局）= 参与；
    没有该域名的配置也视为参与（缺配置不该让补抓停摆）。
    **只管自动路径**：强制补抓、批量重新抓取是人工动作，压过这条规则。 */
-function autoFetchEligible(url) {
+function auto_rules_ok(url) {
   const cfg = state.domainConfig.get(rootDomain(hostOf(url)));
-  if (!cfg) return true;
-  return cfg.auto_fetch !== false;
+  if (cfg && cfg.auto_fetch === false) return false;
+  return true;
+}
+
+/* 自动路径的**放行判据：先确认、后抓取**——该域名必须已有可用抓取方案
+   （系统实测 tested.plan：活跃策略 或 Cookie 直取，由方案确认阶段点亮）。
+   没方案 / 确认过但方案已失效 → 整组不自动抓（确认阶段负责给出结论）。 */
+function autoFetchEligible(url) {
+  if (!auto_rules_ok(url)) return false;
+  const cfg = state.domainConfig.get(rootDomain(hostOf(url)));
+  return !!(cfg && cfg.tested && cfg.tested.plan === true);
+}
+
+/* 该域名是否**待确认**：自动规则允许，但既没有方案、也没有确认结论
+   （没测过 → 确认阶段来测；已有结论的不再尝试——用户语义；
+   本会话内确认遇到临时意外的也不再自动重试）。返回域名名，不需要则 null。 */
+const confirmGaveUp = new Set();   // 本会话：确认遇到临时意外（超时/子进程异常）的域名
+
+function needsConfirmDomain(url) {
+  if (!auto_rules_ok(url)) return null;
+  const d = rootDomain(hostOf(url));
+  if (confirmGaveUp.has(d)) return null;
+  const cfg = state.domainConfig.get(d);
+  if (cfg && cfg.tested && cfg.tested.plan === true) return null;
+  if (cfg && cfg.tested && cfg.tested.confirm) return null;   // 结论已定，不再尝试
+  return d;
+}
+
+/* ---------- 方案确认（自动抓取的最前面，独立阶段） ---------- */
+
+const confirming = new Set();   // 正在确认的域名：并发入队不重复发请求
+
+/** 对一组域名跑方案确认阶段。返回 true = 服务端已给出结论（可继续入队裁决）；
+    false = 请求失败/作废/正有另一轮在跑——调用方不要自动重入，等下一轮轮询。 */
+async function confirmDomains(names) {
+  const todo = names.filter((d) => !confirming.has(d));
+  for (const d of todo) confirming.add(d);
+  if (!todo.length) return false;   // 同域名已在确认中：别再叠一层
+  setStatus(`正在确认 ${todo.length} 个域名的抓取方案（挑真实网址试抓）…`, "busy");
+  try {
+    const data = await postFetch("/api/confirm", {
+      domains: todo, proxy: state.globalProxy,
+    });
+    if (!data || data.stale) return false;          // 切库作废，下一轮重来
+    for (const t of data.transient || []) confirmGaveUp.add(t.domain);   // 意外：本会话不再自动试
+    // 双刷新：tested.plan/confirm（放行判据）+ 记录列表（测试成功的那条已在服务端入库，
+    // 不刷新的话它的卡片还停在灰点旧标题，出队复查也会把它当未抓再数一遍）
+    await loadDomainConfig();
+    await loadRecords();
+    const failed = new Set((data.failed || []).map((f) => f.domain));
+    const skipped = new Set((data.skipped || []).map((s) => s.domain));
+    const blocked = state.records.filter(
+      (r) => !r.fetched && (failed.has(rootDomain(hostOf(r.url)))
+                            || skipped.has(rootDomain(hostOf(r.url))))
+    ).length;
+    const parts = [];
+    if ((data.confirmed || []).length) parts.push(`新确认可用 ${data.confirmed.length} 个`);
+    if ((data.ready || []).length) parts.push(`已有方案 ${data.ready.length} 个`);
+    if ((data.failed || []).length) parts.push(`无方案 ${data.failed.length} 个`);
+    if ((data.transient || []).length) parts.push(`临时失败 ${data.transient.length} 个`);
+    if (blocked) parts.push(`整组跳过 ${blocked} 条`);
+    if (parts.length) {
+      setStatus(`方案确认完成：${parts.join("，")}`, (data.failed || []).length ? "err" : undefined);
+    }
+    return true;
+  } catch (e) {
+    // 确认请求失败：这些域名本轮先不抓（下一轮开页/轮询会再触发确认），不瞎试
+    setStatus("方案确认失败：" + e.message, "err");
+    return false;
+  } finally {
+    for (const d of todo) confirming.delete(d);
+  }
 }
 
 /* ---------- 按钮：进度的权威载体 ----------
@@ -131,8 +201,33 @@ export function enqueueBackfill(urls, note, explicit) {
         也要放行；② forceRun=true，本轮按钮与完成文案得写「强制补抓」；
      ③ 暂停中直接恢复——用户明确点了动作，就是让它跑 */
   /* 自动入队（开页扫描 / 10 秒轮询 / 导入）先按域名 auto_fetch 规则筛掉；
-     explicit（人工点的强制补抓、批量重抓）不过滤——人工动作压过规则 */
-  const pool = explicit ? urls : urls.filter(autoFetchEligible);
+     explicit（人工点的强制补抓、批量重抓）不过滤——人工动作压过规则。
+     自动路径还要**先确认、后抓取**：
+     · 已有方案（tested.plan）→ 直接过 eligible；
+     · 待确认（没方案、没结论）→ 先跑方案确认阶段（独立模块，挑真实网址试抓），
+       结论回来后**重新入队一次**由 eligible 裁决——放行或整组跳过；
+     · 确认过无方案 / 方案失效 → eligible 直接挡掉，一条都不发。 */
+  let pool = urls;
+  if (!explicit) {
+    const unknown = new Set();
+    for (const u of urls) {
+      const d = needsConfirmDomain(u);
+      if (d) unknown.add(d);
+    }
+    if (unknown.size) {
+      const gen = backfillState.gen;
+      confirmDomains([...unknown]).then((ok) => {
+        if (!ok || gen !== backfillState.gen) return;
+        /* 只重入**已经拿到结论**的 url（needsConfirm 转 false）：
+           没拿到结论的（服务端没见到/pending 竞态）留在原地等下一轮轮询，
+           否则会构成「确认→无结论→再确认」的空转循环 */
+        const rest = urls.filter((u) => !needsConfirmDomain(u));
+        if (rest.length) enqueueBackfill(rest, note);
+      });
+      pool = urls.filter((u) => !unknown.has(rootDomain(hostOf(u))));
+    }
+    pool = pool.filter(autoFetchEligible);
+  }
 
   if (explicit) {
     for (const u of pool) if (u) backfillState.forceUrls.add(u);

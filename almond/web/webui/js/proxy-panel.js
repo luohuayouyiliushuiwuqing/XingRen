@@ -184,7 +184,16 @@ async function renderProxyPanel() {
 
     /* ── 左：系统实测（只读徽标，整行点击进子页） ── */
     const verdict = (t) => {
-      if (!t) return { text: "未测试", cls: "none", title: "系统还没抓取过这个域名，没有实测结论" };
+      if (!t) return { text: "未测试", cls: "none", title: "系统还没抓取过这个域名；自动抓取前会先自动确认方案" };
+      // 方案确认阶段的结论优先（自动抓取的放行/跳过依据）
+      if (t.confirm && t.confirm.ok === false) {
+        return { text: "无方案", cls: "bad",
+                 title: `系统实测：${t.confirm.reason || "直连/代理/JS 多路尝试均未取得数据"}（${t.confirm.at || "时间未知"}）——自动抓取整组跳过` };
+      }
+      if (t.confirm && t.plan !== true) {
+        return { text: "方案失效", cls: "bad",
+                 title: `系统实测：确认过（${t.confirm.at || "时间未知"}）但当前无可用方案——自动抓取跳过，人工强制补抓仍可试` };
+      }
       if (t.direct === true) {
         return { text: "直连", cls: "ok", title: `系统实测：直连可达（${t.updated || "时间未知"}）` };
       }
@@ -208,6 +217,8 @@ async function renderProxyPanel() {
     for (const d of rightOrder) {
       const row = el("div", "rule-row test-row");
       const v = verdict(d.tested);
+      // 有活跃方案的把方案 id 带进悬浮说明（系统实测的抓取方案）
+      if (d.tested && d.tested.strategy) v.title += `；方案 ${d.tested.strategy}`;
       const nameBtn = el("span", "rule-pattern link", d.name);
       nameBtn.title = `${v.title}；点击进入 ${d.name} 子页`;
       nameBtn.addEventListener("click", () => {
